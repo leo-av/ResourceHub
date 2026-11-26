@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: 1. Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 2. Set up OpenJDK 21 LTS (Temurin) with Maven Cache
         uses: actions/setup-java@v4
