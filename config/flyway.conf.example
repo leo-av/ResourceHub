@@ -1,0 +1,18 @@
+# ==============================================================================
+# ResourceHub — Configuración de Flyway para PostgreSQL 16 (Neon)
+# ==============================================================================
+# Plantilla de referencia. El script `scripts/flyway-manage.sh` inyecta las
+# variables dinámicamente desde `.env` sin almacenar contraseñas en disco.
+# ==============================================================================
+
+flyway.url=jdbc:postgresql://ep-lively-cherry-bh7xy3tq.c-10.eu-central-1.aws.neon.tech:5432/resourcehub?sslmode=require&ApplicationName=resourcehub-flyway-admin
+flyway.user=admin
+flyway.password=CHANGE_ME_VIA_ENV
+flyway.defaultSchema=public
+flyway.schemas=public,platform_catalog,org_config,access,resources,availability,reservations,policies,traceability,events,integrations,payments
+flyway.table=flyway_schema_history
+flyway.locations=filesystem:db/migration
+flyway.encoding=UTF-8
+flyway.validateOnMigrate=true
+flyway.cleanDisabled=true
+flyway.outOfOrder=false

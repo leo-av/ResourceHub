@@ -1,0 +1,53 @@
+# ==============================================================================
+# ResourceHub — Workflow CI/CD de Rama Principal `main` (Fases 6 y 7)
+# ==============================================================================
+# Ejecuta la verificación completa tras integrar en `main` y genera el artefacto
+# reproducible con su manifiesto de versión y checksum `SHA-256` (`retention-days: 5`
+# para mantenerse siempre dentro de los 500 MB gratuitos de GitHub Free).
+# ==============================================================================
+name: CI/CD — Main Verification & Reproducible Artifact
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-main-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-package:
+    name: Verify & Package Reproducible Artifact (Java 21)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up OpenJDK 21 LTS (Temurin) with Maven Cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 3. Verify all Quality Gates
+        run: ./scripts/dev.sh verify
+
+      - name: 4. Package Reproducible Artifact & SHA-256 Checksums
+        run: ./scripts/dev.sh package
+
+      - name: 5. Upload Reproducible Distribution (5-day retention for Free Quota)
+        uses: actions/upload-artifact@v4
+        with:
+          name: resourcehub-dist-${{ github.sha }}
+          path: target/dist/
+          retention-days: 5
+          if-no-files-found: error

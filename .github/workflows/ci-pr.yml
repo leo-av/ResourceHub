@@ -1,0 +1,45 @@
+# ==============================================================================
+# ResourceHub — Workflow CI de Pull Request (Fase 6 — Coste Cero $0.00)
+# ==============================================================================
+# Reglas de seguridad y economía:
+#   - Permisos mínimos: `contents: read`.
+#   - Cancela ejecuciones previas en la misma rama (`cancel-in-progress: true`).
+#   - NO se conecta a la BD de desarrollo en Neon ni requiere secretos en GitHub.
+#   - Todas las acciones fijadas a versión explícita.
+# ==============================================================================
+name: CI — Pull Request Quality Gates
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    name: Gate 1-5 — Security, Lint, Build & Tests (Java 21)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up OpenJDK 21 LTS (Temurin) with Maven Cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 3. Gate — Security & Secret Scan
+        run: ./scripts/security-scan.sh
+
+      - name: 4. Gate — Static Analysis (Checkstyle) & Build Verification
+        run: ./scripts/dev.sh verify
