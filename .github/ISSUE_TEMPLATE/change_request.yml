@@ -1,0 +1,24 @@
+name: "Solicitud de Cambio Controlado (PCR-DAT-* / Nuevo ErrorCode DTD-011)"
+description: "Solicitar aprobación humana expresa para cambios en el modelo de datos, contratos o catálogo de errores"
+title: "[PCR] "
+labels: ["change-request", "requires-owner-approval"]
+body:
+  - type: dropdown
+    id: change_category
+    attributes:
+      label: "Categoría de Cambio (Condición Stop-the-Line STL-01..08)"
+      options:
+        - "STL-01: Propuesta de cambio en Modelo Físico de Datos (PCR-DAT-*)"
+        - "STL-02: Nuevo código de error en catálogo híbrido (DTD-011: ErrorCode + error_catalog)"
+        - "STL-03: Cambio en contrato externo o ResponseWrapper<T>"
+        - "STL-04: Cambio en dependencias del DAG modular"
+        - "STL-05/06: Resolución de cuestión abierta o contradicción documental"
+    validations:
+      required: true
+  - type: textarea
+    id: justification_and_impact
+    attributes:
+      label: "Justificación Técnica, Documentos Afectados y Opciones Evaluadas"
+      description: "Recuerde que ningún agente puede ejecutar este cambio sin aprobación explícita del propietario."
+    validations:
+      required: true

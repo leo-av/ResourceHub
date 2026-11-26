@@ -1,0 +1,46 @@
+name: "Tarea Técnica / Historia del Backlog (TT-* / HU-*)"
+description: "Registrar o activar una unidad de trabajo aprobada del Backlog Técnico Implementable v1.0"
+title: "[TT-XXX] "
+labels: ["backlog-item"]
+body:
+  - type: input
+    id: work_unit_ids
+    attributes:
+      label: "Identificadores de Trazabilidad (TT-* / HU-* / FUN-* / MVP-*)"
+      description: "IDs canónicos según ResourceHub — Backlog Técnico Implementable v1.0.md"
+      placeholder: "TT-001 | HU-001 | FUN-001 | EP-01 | MVP-0"
+    validations:
+      required: true
+  - type: input
+    id: spec_id
+    attributes:
+      label: "Especificación SDD Asociada (SPEC-<MOD>-<NNN>)"
+      placeholder: "SPEC-SH-001"
+    validations:
+      required: true
+  - type: dropdown
+    id: module_xf
+    attributes:
+      label: "Módulo / Componente XF Principal"
+      options:
+        - "MOD-11: núcleo compartido (mod-11-shared)"
+        - "COMP-GW: API Gateway de Borde (comp-gw-gateway)"
+        - "MOD-01: plataforma (mod-01-platform)"
+        - "MOD-02: acceso / PII Vault (mod-02-access)"
+        - "MOD-03: recursos (mod-03-resources)"
+        - "MOD-04: disponibilidad (mod-04-availability)"
+        - "MOD-05: reservas (mod-05-reservations)"
+        - "MOD-06: políticas (mod-06-policies)"
+        - "MOD-07: trazabilidad (mod-07-traceability)"
+        - "MOD-08: eventos (mod-08-events)"
+        - "MOD-09: integraciones (mod-09-integrations)"
+        - "MOD-10: pagos (mod-10-payments)"
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: "Escenarios Given / When / Then y Pruebas TDD (PRU-01..11)"
+      description: "Resumen de criterios de aceptación verificables y niveles de prueba requeridos"
+    validations:
+      required: true

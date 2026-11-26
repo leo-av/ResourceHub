@@ -1,0 +1,25 @@
+name: "Defecto / Incidencia Técnica (BUG)"
+description: "Reportar un fallo funcional, arquitectónico (XF) o de contrato (ResponseWrapper / FFMMCC)"
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: input
+    id: affected_context
+    attributes:
+      label: "Módulo XF, Tarea (TT-*) y Especificación (SPEC-*) Afectados"
+      placeholder: "MOD-05 (mod-05-reservations) | TT-012 | SPEC-RES-001"
+    validations:
+      required: true
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: "Escenario Given / When / Then que Reproduce el Fallo (Test en RED)"
+      description: "Describa los pasos exactos para reproducir el defecto mediante un test automatizado"
+    validations:
+      required: true
+  - type: textarea
+    id: expected_vs_actual
+    attributes:
+      label: "Comportamiento Esperado (según SPEC-*) vs. Comportamiento Obtenido"
+    validations:
+      required: true

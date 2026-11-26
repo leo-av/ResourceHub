@@ -1,0 +1,42 @@
+# ==============================================================================
+# ResourceHub — Workflow de Mantenimiento y Auditoría de Dependencias (Fase 6)
+# ==============================================================================
+# Se ejecuta bajo demanda (`workflow_dispatch`) o una vez por semana (lunes 04:00 UTC)
+# consumiendo < 2 minutos/semana (< 10 min/mes de la cuota gratuita de 2.000 min/mes).
+# ==============================================================================
+name: CI — Weekly Maintenance & Dependency Audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-maintenance
+  cancel-in-progress: true
+
+jobs:
+  dependency-and-security-audit:
+    name: Dependency Tree & Security Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up OpenJDK 21 LTS (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 3. Execute Secret & Script Security Audit
+        run: ./scripts/security-scan.sh
+
+      - name: 4. Verify Maven Dependency Tree & Enforcer Rules
+        run: ./mvnw -B validate dependency:tree
