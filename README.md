@@ -1,6 +1,6 @@
 # ResourceHub — Monolito Modular XF y API Gateway de Borde
 
-Repositorio oficial de código de **ResourceHub** (`Java 21 LTS`, `Spring Boot 3.4`, `Spring Modulith`, `PostgreSQL 16+`, `Flyway 10`, `Testcontainers`, `ArchUnit`, **Arquitectura XF**).
+Repositorio oficial de código de **ResourceHub** (`Java 21 LTS`, `Spring Boot 4.2`, `Spring Modulith 2.2`, `PostgreSQL 16+`, `Flyway 13`, `JUnit 6`, `Testcontainers 2`, `ArchUnit 1.5`, **Arquitectura XF**).
 
 > [!IMPORTANT]
 > **Fuente única de verdad documental (`AGENTS.md`):**

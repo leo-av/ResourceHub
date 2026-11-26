@@ -53,7 +53,7 @@ if command -v flyway >/dev/null 2>&1; then
 else
     docker run --rm \
         -v "${PROJECT_ROOT}/db/migration:/flyway/sql:ro" \
-        flyway/flyway:10-alpine \
+        flyway/flyway:13-alpine \
         -url="${FLYWAY_JDBC_URL}" \
         -user="${PG_ADMIN_USER}" \
         -password="${PG_ADMIN_PASSWORD}" \
