@@ -5,29 +5,17 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     labels:
       - "dependencies"
       - "security"
-    ignore:
-      # Bloqueo de saltos major incompatibles con la línea base ADR-005 / ADR-010 / DEP-003 (DEC-096)
-      - dependency-name: "org.springframework.boot:*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "org.springframework.modulith:*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "org.flywaydb:*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "org.junit.jupiter:*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "org.testcontainers:*"
-        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     labels:
       - "ci"
       - "dependencies"
