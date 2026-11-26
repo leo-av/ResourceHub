@@ -1,0 +1,22 @@
+# Normalización de finales de línea y tratamiento de archivos en Git
+* text=auto eol=lf
+
+*.java       text eol=lf
+*.xml        text eol=lf
+*.sql        text eol=lf
+*.sh         text eol=lf
+*.md         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.json       text eol=lf
+*.properties text eol=lf
+mvnw         text eol=lf
+Makefile     text eol=lf
+
+*.cmd        text eol=crlf
+*.bat        text eol=crlf
+
+*.jar        binary
+*.png        binary
+*.jpg        binary
+*.pdf        binary

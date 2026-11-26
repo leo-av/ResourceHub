@@ -1,0 +1,68 @@
+# ==============================================================================
+# ResourceHub — .gitignore Oficial del Monorepo
+# ==============================================================================
+
+# 1. Secretos, credenciales y variables de entorno locales (NUNCA versionar)
+.env
+.env.*
+!.env.example
+config/*.env
+!config/*.env.example
+config/flyway.conf
+!config/flyway.conf.example
+.secrets/
+*.secret
+*.key
+*.pem
+*.p12
+*.jks
+
+# 2. Compilación y artefactos Maven / Java
+target/
+*.class
+*.jar
+!**/wrapper/*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+
+# 3. IntelliJ IDEA (Conservar configuración compartida: codeStyles, runConfigurations, encodings, compiler)
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/dictionaries/
+.idea/shelf/
+.idea/caches/
+.idea/libraries/
+.idea/artifacts/
+.idea/dataSources/
+.idea/dataSources.ids
+.idea/dataSources.local.xml
+.idea/sqlDataSources.xml
+.idea/dynamic.xml
+.idea/uiDesigner.xml
+.idea/dbnavigator.xml
+.idea/httpRequests/
+*.iws
+*.iml
+*.ipr
+out/
+
+# 4. Futuro Frontend (Node / TypeScript / Vite / Playwright en MVP-3.2+)
+node_modules/
+dist/
+playwright-report/
+test-results/
+
+# 5. Archivos temporales, logs y sistema operativo
+*.log
+logs/
+/tmp/
+.DS_Store
+Thumbs.db
+*~

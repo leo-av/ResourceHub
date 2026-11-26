@@ -1,0 +1,6 @@
+# Propietario de la arquitectura, especificaciones SDD, migraciones Flyway y SKILLs
+* @owner
+/.agents/ @owner
+/.github/ @owner
+/db/migration/ @owner
+/pom.xml @owner
