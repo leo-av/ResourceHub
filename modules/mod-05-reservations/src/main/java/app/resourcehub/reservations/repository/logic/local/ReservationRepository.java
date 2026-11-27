@@ -186,7 +186,7 @@ public class ReservationRepository extends PostgresRepository {
                 version = version + 1,
                 updated_at = ?
             WHERE id = ? AND version = ?
-            RETURNING """ + HEADER_COLUMNS;
+            """ + "RETURNING " + HEADER_COLUMNS;
 
         String releaseLinesSql = """
             UPDATE reservations.reservation_line
