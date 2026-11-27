@@ -136,6 +136,46 @@ public class ResourceRepository extends PostgresRepository {
         }, "ResourceRepository.findByStatus");
     }
 
+    public List<StoredResource> findPaged(String optionalStatus, int limit, int offset) {
+        String sql = optionalStatus == null
+            ? BASE_SELECT + " ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?"
+            : BASE_SELECT + " WHERE status = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?";
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                int idx = 1;
+                if (optionalStatus != null) {
+                    ps.setString(idx++, optionalStatus);
+                }
+                ps.setInt(idx++, limit);
+                ps.setInt(idx, offset);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<StoredResource> results = new ArrayList<>();
+                    while (rs.next()) {
+                        results.add(mapRow(rs));
+                    }
+                    return results;
+                }
+            }
+        }, "ResourceRepository.findPaged");
+    }
+
+    public long countByOptionalStatus(String optionalStatus) {
+        String sql = optionalStatus == null
+            ? "SELECT COUNT(*) FROM resources.resource"
+            : "SELECT COUNT(*) FROM resources.resource WHERE status = ?";
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                if (optionalStatus != null) {
+                    ps.setString(1, optionalStatus);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        }, "ResourceRepository.countByOptionalStatus");
+    }
+
     public StoredResource updateStatus(UUID id, String status, Instant updatedAt) {
         String sql = """
             UPDATE resources.resource
