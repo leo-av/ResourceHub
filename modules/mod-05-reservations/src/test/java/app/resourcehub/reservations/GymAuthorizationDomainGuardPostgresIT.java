@@ -196,9 +196,15 @@ class GymAuthorizationDomainGuardPostgresIT {
         );
 
         for (CatalogResource res : List.of(gymRoom, em1Person, em2Person)) {
-            app.resourcehub.resources.api.A.consoleCatalog().patchResourceStatus(
-                adConsole, res.id(), new PatchResourceStatusCommand(ResourceStatus.AVAILABLE), "req-act", FIXED_CLOCK
-            );
+            if (res.status() != ResourceStatus.AVAILABLE) {
+                app.resourcehub.resources.api.A.consoleCatalog().patchResourceStatus(
+                    adConsole,
+                    res.id(),
+                    new PatchResourceStatusCommand(ResourceStatus.AVAILABLE),
+                    "req-act",
+                    FIXED_CLOCK
+                );
+            }
             app.resourcehub.availability.api.A.consoleAvailability().replaceWeeklySchedule(
                 adConsole,
                 res.id(),
