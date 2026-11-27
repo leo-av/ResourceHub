@@ -144,3 +144,5 @@ CREATE INDEX IF NOT EXISTS idx_res_line_root_active
 
 COMMENT ON TABLE reservation_line IS
     'EL-RES-03: Líneas de reserva por recurso con rango semiabierto [start_at, end_at) e índice GiST activo (ADR-008).';
+
+SET LOCAL search_path TO public;

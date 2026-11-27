@@ -60,9 +60,8 @@ public class ReservationRepository extends PostgresRepository {
                 try (PreparedStatement psLine = conn.prepareStatement(insertLineSql)) {
                     for (StoredReservationLine line : lines) {
                         bindLine(psLine, line);
-                        psLine.addBatch();
+                        psLine.executeUpdate();
                     }
-                    psLine.executeBatch();
                 }
                 conn.commit();
                 return new StoredReservationAggregate(header, List.copyOf(lines));
@@ -148,7 +147,7 @@ public class ReservationRepository extends PostgresRepository {
             FROM reservations.reservation_line
             WHERE resource_id = ?
               AND status = 'ACTIVE'
-              AND tstzrange(start_at, end_at, '[)') && tstzrange(?, ?, '[)')
+              AND tstzrange(start_at, end_at, '[)') && tstzrange(?::timestamptz, ?::timestamptz, '[)')
             ORDER BY start_at ASC, id ASC
             """;
         return executeWithConnection(conn -> {

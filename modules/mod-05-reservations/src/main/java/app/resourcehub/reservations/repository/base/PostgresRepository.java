@@ -27,10 +27,14 @@ public abstract class PostgresRepository {
         try (Connection connection = dataSource.getConnection()) {
             return work.execute(connection);
         } catch (SQLException ex) {
+            String sqlState = ex.getSQLState();
+            if (sqlState == null && ex.getNextException() != null) {
+                sqlState = ex.getNextException().getSQLState();
+            }
             throw new ReservationsRepositoryException(
                 "PostgreSQL failure during " + operation + ": " + ex.getMessage(),
                 ex,
-                ex.getSQLState()
+                sqlState
             );
         }
     }
