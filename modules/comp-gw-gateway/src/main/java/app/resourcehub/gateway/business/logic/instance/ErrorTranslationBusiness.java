@@ -1,13 +1,12 @@
 package app.resourcehub.gateway.business.logic.instance;
 
 import app.resourcehub.gateway.business.structs.TranslatedError;
+import app.resourcehub.gateway.business.structs.TranslatedErrorDetail;
 import app.resourcehub.gateway.repository.logic.local.ErrorCatalogCacheRepository;
 import app.resourcehub.gateway.repository.structs.CachedErrorDefinition;
-import app.resourcehub.shared.api.structs.ErrorDetail;
-import app.resourcehub.shared.api.structs.InternalProblem;
-import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -30,61 +29,52 @@ public class ErrorTranslationBusiness {
         this.clock = clock;
     }
 
-    public <T> ResponseWrapper<T> buildOkWrapper(String description, T data, String requestId) {
-        return ResponseWrapper.ok(description, data, requestId, clock.instant());
+    public Instant currentTimestamp() {
+        return clock.instant();
     }
 
-    public TranslatedError translateProblem(InternalProblem problem, String requestId) {
-        if (problem == null) {
-            return translateUnhandled(new IllegalArgumentException("InternalProblem must not be null"), requestId);
+    public TranslatedError translate(ErrorCode errorCode, List<TranslatedErrorDetail> fieldErrors) {
+        if (errorCode == null || errorCode == ErrorCode.OK) {
+            return translateUnhandled(new IllegalArgumentException("ErrorCode must not be null or OK"), "n/a");
         }
-        CachedErrorDefinition definition = cacheRepository.resolve(problem.code());
-        List<ErrorDetail> safeErrors;
-        if (problem.code() == ErrorCode.VALIDATION_FAILED && !problem.fieldErrors().isEmpty()) {
-            safeErrors = problem.fieldErrors();
+        CachedErrorDefinition definition = cacheRepository.resolve(errorCode.name());
+        List<TranslatedErrorDetail> safeErrors;
+        if (errorCode == ErrorCode.VALIDATION_FAILED && fieldErrors != null && !fieldErrors.isEmpty()) {
+            safeErrors = fieldErrors;
         } else {
-            safeErrors = List.of(new ErrorDetail(null, definition.defaultMessage()));
+            safeErrors = List.of(new TranslatedErrorDetail(null, definition.defaultMessage()));
         }
-        ResponseWrapper<Void> wrapper = ResponseWrapper.error(
-            definition.numericValue(),
-            safeErrors,
-            requestId,
-            clock.instant()
-        );
-        return new TranslatedError(definition.httpStatus(), wrapper);
+        return new TranslatedError(definition.httpStatus(), definition.numericValue(), clock.instant(), safeErrors);
     }
 
-    public TranslatedError translateNotFound(String requestId) {
-        CachedErrorDefinition definition = cacheRepository.resolve(ErrorCode.NOT_FOUND);
-        ResponseWrapper<Void> wrapper = ResponseWrapper.error(
+    public TranslatedError translateNotFound() {
+        CachedErrorDefinition definition = cacheRepository.resolve(ErrorCode.NOT_FOUND.name());
+        return new TranslatedError(
+            definition.httpStatus(),
             definition.numericValue(),
-            List.of(new ErrorDetail(null, definition.defaultMessage())),
-            requestId,
-            clock.instant()
+            clock.instant(),
+            List.of(new TranslatedErrorDetail(null, definition.defaultMessage()))
         );
-        return new TranslatedError(definition.httpStatus(), wrapper);
     }
 
     public TranslatedError translateUnhandled(Throwable exception, String requestId) {
         LOGGER.log(Level.SEVERE, "Unhandled error correlation requestId=" + requestId, exception);
-        CachedErrorDefinition definition = cacheRepository.resolve(ErrorCode.INTERNAL_ERROR);
-        ResponseWrapper<Void> wrapper = ResponseWrapper.error(
+        CachedErrorDefinition definition = cacheRepository.resolve(ErrorCode.INTERNAL_ERROR.name());
+        return new TranslatedError(
+            definition.httpStatus(),
             definition.numericValue(),
-            List.of(new ErrorDetail(null, definition.defaultMessage())),
-            requestId,
-            clock.instant()
+            clock.instant(),
+            List.of(new TranslatedErrorDetail(null, definition.defaultMessage()))
         );
-        return new TranslatedError(definition.httpStatus(), wrapper);
     }
 
-    public TranslatedError translateServiceUnavailable(String requestId) {
-        CachedErrorDefinition definition = cacheRepository.resolve(ErrorCode.SERVICE_UNAVAILABLE);
-        ResponseWrapper<Void> wrapper = ResponseWrapper.error(
+    public TranslatedError translateServiceUnavailable() {
+        CachedErrorDefinition definition = cacheRepository.resolve(ErrorCode.SERVICE_UNAVAILABLE.name());
+        return new TranslatedError(
+            definition.httpStatus(),
             definition.numericValue(),
-            List.of(new ErrorDetail(null, definition.defaultMessage())),
-            requestId,
-            clock.instant()
+            clock.instant(),
+            List.of(new TranslatedErrorDetail(null, definition.defaultMessage()))
         );
-        return new TranslatedError(definition.httpStatus(), wrapper);
     }
 }

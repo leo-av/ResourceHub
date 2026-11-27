@@ -1,6 +1,16 @@
 package app.resourcehub.gateway.business.structs;
 
-import app.resourcehub.shared.api.structs.ResponseWrapper;
+import java.time.Instant;
+import java.util.List;
 
-public record TranslatedError(int httpStatus, ResponseWrapper<Void> wrapper) {
+public record TranslatedError(
+    int httpStatus,
+    int numericCode,
+    Instant timestamp,
+    List<TranslatedErrorDetail> errors
+) {
+
+    public TranslatedError {
+        errors = errors == null ? List.of() : List.copyOf(errors);
+    }
 }

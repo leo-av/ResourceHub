@@ -27,7 +27,7 @@ public final class XF {
         Supplier<List<CachedErrorDefinition>> mappedSupplier = () -> catalogSupplier.get().stream()
             .filter(ErrorCatalogEntry::active)
             .map(entry -> new CachedErrorDefinition(
-                entry.code(),
+                entry.code().name(),
                 entry.numericValue(),
                 entry.httpStatus(),
                 entry.defaultMessage()
