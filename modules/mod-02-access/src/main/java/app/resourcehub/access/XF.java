@@ -3,6 +3,8 @@ package app.resourcehub.access;
 import app.resourcehub.access.api.A;
 import app.resourcehub.access.business.B;
 import app.resourcehub.access.repository.R;
+import java.time.Clock;
+import javax.sql.DataSource;
 
 public final class XF {
 
@@ -13,6 +15,12 @@ public final class XF {
     public static void init() {
         R.init();
         B.init();
+        A.init();
+    }
+
+    public static void init(DataSource dataSource, Clock clock) {
+        R.init(dataSource);
+        B.init(clock);
         A.init();
     }
 
