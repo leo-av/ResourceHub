@@ -168,6 +168,58 @@ class CatalogBusinessTest {
             .isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 
+    @Test
+    @DisplayName("TT-008: Paginacion de catalogo, descriptor interno y transiciones via PATCH")
+    void shouldPaginateCatalogReturnDescriptorAndValidateInputs() {
+        assertThat(resourceBusiness.listPage(1, 10).totalItems()).isZero();
+        assertThat(resourceBusiness.listPage(1, 10).totalPages()).isZero();
+
+        assertThatThrownBy(() -> resourceBusiness.listPage(0, 10))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> resourceBusiness.listAvailablePage(1, 0))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> resourceBusiness.listAvailablePage(1, 101))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> resourceBusiness.getResourceDescriptor(UUID.randomUUID()))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+
+        ResourceType roomType = resourceTypeBusiness.createResourceType(
+            "ROOM",
+            "Sala",
+            null,
+            ResourceNature.SPACE
+        );
+        CatalogResource r1 = resourceBusiness.createSimpleResource(
+            roomType.id(), "R-01", "Sala 1", null, 4, false, false, null
+        );
+        CatalogResource r2 = resourceBusiness.createSimpleResource(
+            roomType.id(), "R-02", "Sala 2", null, 2, false, false, null
+        );
+
+        assertThat(resourceBusiness.getResourceDescriptor(r1.id()).code()).isEqualTo("R-01");
+        assertThat(resourceBusiness.transitionStatus(r2.id(), ResourceStatus.DISABLED).status())
+            .isEqualTo(ResourceStatus.DISABLED);
+        assertThat(resourceBusiness.transitionStatus(r2.id(), ResourceStatus.AVAILABLE).status())
+            .isEqualTo(ResourceStatus.AVAILABLE);
+        assertThatThrownBy(() -> resourceBusiness.transitionStatus(r2.id(), null))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        resourceBusiness.disableResource(r2.id());
+        assertThat(resourceBusiness.listPage(1, 1).totalPages()).isEqualTo(2);
+        assertThat(resourceBusiness.listPage(2, 1).items()).extracting(CatalogResource::code).containsExactly("R-02");
+        assertThat(resourceBusiness.listAvailablePage(1, 10).totalItems()).isEqualTo(1);
+    }
+
     private static final class InMemoryResourceTypeRepository extends ResourceTypeRepository {
         private final Map<UUID, StoredResourceType> byId = new LinkedHashMap<>();
 
@@ -243,6 +295,21 @@ class CatalogBusinessTest {
             return byId.values().stream()
                 .filter(r -> r.status().equals(status))
                 .toList();
+        }
+
+        @Override
+        public List<StoredResource> findPaged(String optionalStatus, int limit, int offset) {
+            List<StoredResource> filtered = optionalStatus == null
+                ? findAll()
+                : findByStatus(optionalStatus);
+            int from = Math.min(offset, filtered.size());
+            int to = Math.min(from + limit, filtered.size());
+            return filtered.subList(from, to);
+        }
+
+        @Override
+        public long countByOptionalStatus(String optionalStatus) {
+            return optionalStatus == null ? byId.size() : findByStatus(optionalStatus).size();
         }
 
         @Override
