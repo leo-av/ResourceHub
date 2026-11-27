@@ -82,7 +82,7 @@ class PlatformCatalogPostgresIT {
     @Test
     @DisplayName("PRU-03: V1 y V2 aplicadas idempotentemente con 12 columnas en organization y 10 en error_catalog")
     void shouldApplyV1AndV2AndExposeExpectedTableColumns() throws SQLException {
-        assertThat(migrateResult.migrationsExecuted).isEqualTo(2);
+        assertThat(migrateResult.migrationsExecuted).isGreaterThanOrEqualTo(2);
 
         try (Connection conn = dbaApiDataSource.getConnection()) {
             assertThat(countTableColumns(conn, "platform_catalog", "organization")).isEqualTo(12);

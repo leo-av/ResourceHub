@@ -43,6 +43,7 @@
     <assertj.version>3.27.7</assertj.version>
     <testcontainers.version>2.0.5</testcontainers.version>
     <archunit.version>1.5.1</archunit.version>
+    <bouncycastle.version>1.87</bouncycastle.version>
 
     <!-- Versiones exactas de Plugins de Construcción y Calidad -->
     <maven-enforcer-plugin.version>3.7.0</maven-enforcer-plugin.version>
