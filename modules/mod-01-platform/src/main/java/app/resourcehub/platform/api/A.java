@@ -1,16 +1,27 @@
 package app.resourcehub.platform.api;
 
+import app.resourcehub.platform.api.logic.services.ErrorCatalogService;
+
 public final class A {
+
+    private static ErrorCatalogService errorCatalogService;
 
     private A() {
         throw new UnsupportedOperationException("Static XF api injector");
     }
 
     public static void init() {
-        // Sin componentes api activos en el esqueleto inicial de mod-01-platform.
+        errorCatalogService = new ErrorCatalogService();
+    }
+
+    public static ErrorCatalogService errorCatalog() {
+        if (errorCatalogService == null) {
+            throw new IllegalStateException("A.init() has not been called");
+        }
+        return errorCatalogService;
     }
 
     public static void terminate() {
-        // Sin recursos api que liberar en el esqueleto inicial de mod-01-platform.
+        errorCatalogService = null;
     }
 }
