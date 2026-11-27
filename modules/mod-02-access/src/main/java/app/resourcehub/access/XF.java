@@ -4,6 +4,8 @@ import app.resourcehub.access.api.A;
 import app.resourcehub.access.business.B;
 import app.resourcehub.access.repository.R;
 import java.time.Clock;
+import java.util.UUID;
+import java.util.function.Function;
 import javax.sql.DataSource;
 
 public final class XF {
@@ -19,8 +21,16 @@ public final class XF {
     }
 
     public static void init(DataSource dataSource, Clock clock) {
+        init(dataSource, clock, orgId -> Boolean.FALSE);
+    }
+
+    public static void init(
+        DataSource dataSource,
+        Clock clock,
+        Function<UUID, Boolean> allowStandardUserSpaceBookingResolver
+    ) {
         R.init(dataSource);
-        B.init(clock);
+        B.init(clock, allowStandardUserSpaceBookingResolver);
         A.init();
     }
 
