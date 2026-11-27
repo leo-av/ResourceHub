@@ -10,9 +10,14 @@ import app.resourcehub.platform.business.structs.ErrorCatalogEntry;
 import app.resourcehub.shared.api.structs.ErrorDetail;
 import app.resourcehub.shared.api.structs.InternalProblem;
 import app.resourcehub.shared.api.structs.ResponseWrapper;
+import app.resourcehub.shared.business.structs.ActorContext;
+import app.resourcehub.shared.business.structs.SharedDomainException;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 public class EdgeGatewayService {
 
@@ -20,6 +25,38 @@ public class EdgeGatewayService {
 
     public EdgeGatewayService(Clock clock) {
         this.clock = clock != null ? clock : Clock.systemUTC();
+    }
+
+    public Optional<GatewayResponse<Void>> enforcePerimeter(GatewayRequest request, UUID expectedOrganizationId) {
+        return enforcePerimeter(request, null, expectedOrganizationId);
+    }
+
+    public Optional<GatewayResponse<Void>> enforcePerimeter(
+        GatewayRequest request,
+        ActorContext resolvedActor,
+        UUID expectedOrganizationId
+    ) {
+        GatewaySanitizedRequest sanitized = B.hostRouting().sanitizeInboundRequest(request);
+        try {
+            B.scopeEnforcement().enforce(sanitized, resolvedActor, expectedOrganizationId);
+            return Optional.empty();
+        } catch (SharedDomainException ex) {
+            TranslatedError translated = B.errorTranslation().translate(ex.getErrorCode(), List.of());
+            return Optional.of(toGatewayResponse(sanitized.requestId(), translated));
+        }
+    }
+
+    public <T> GatewayResponse<?> enforceAndDispatch(
+        GatewayRequest request,
+        ActorContext resolvedActor,
+        UUID expectedOrganizationId,
+        Supplier<GatewayResponse<T>> action
+    ) {
+        Optional<GatewayResponse<Void>> rejected = enforcePerimeter(request, resolvedActor, expectedOrganizationId);
+        if (rejected.isPresent()) {
+            return rejected.get();
+        }
+        return action.get();
     }
 
     public <T> GatewayResponse<T> handleOk(GatewayRequest request, String description, T data) {
