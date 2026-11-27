@@ -17,6 +17,7 @@ import app.resourcehub.reservations.business.structs.ReservationPage;
 import app.resourcehub.reservations.business.structs.ReservationStatus;
 import app.resourcehub.reservations.business.structs.ReservationsBusinessException;
 import app.resourcehub.reservations.repository.logic.local.ReservationRepository;
+import app.resourcehub.reservations.repository.structs.ReservationsRepositoryException;
 import app.resourcehub.reservations.repository.structs.StoredReservation;
 import app.resourcehub.reservations.repository.structs.StoredReservationAggregate;
 import app.resourcehub.reservations.repository.structs.StoredReservationLine;
@@ -487,6 +488,45 @@ class ReservationsBusinessTest {
         assertThatThrownBy(() -> reservationBusiness.getOwnReservation(CLIENT_USER_1, null))
             .isInstanceOf(ReservationsBusinessException.class);
 
+        // TT-014: orden canonico de claves y traduccion SQLState 23P01 vs propagacion de otros errores SQL
+        UUID u1 = UUID.fromString("01936b00-0000-7000-8000-000000000001");
+        UUID u2 = UUID.fromString("01936b00-0000-7000-8000-000000000002");
+        assertThat(ReservationRepository.canonicalLockOrder(null)).isEmpty();
+        assertThat(ReservationRepository.canonicalLockOrder(List.of())).isEmpty();
+        assertThat(ReservationRepository.canonicalLockOrder(Arrays.asList(u2, u1, u2, null)))
+            .containsExactly(u1, u2);
+
+        reservationRepository.forcedSqlStateOnCanonicalInsert = "23P01";
+        assertThatThrownBy(() -> reservationBusiness.createReservation(
+            CLIENT_USER_1,
+            new CreateReservationCommand(
+                RESOURCE_ID,
+                Instant.parse("2026-11-30T12:00:00Z"),
+                Instant.parse("2026-11-30T13:00:00Z"),
+                1,
+                null
+            ),
+            MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.BOOKING_CONFLICT);
+
+        reservationRepository.forcedSqlStateOnCanonicalInsert = "22001";
+        assertThatThrownBy(() -> reservationBusiness.createReservation(
+            CLIENT_USER_1,
+            new CreateReservationCommand(
+                RESOURCE_ID,
+                Instant.parse("2026-11-30T12:00:00Z"),
+                Instant.parse("2026-11-30T13:00:00Z"),
+                1,
+                null
+            ),
+            MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsRepositoryException.class);
+        reservationRepository.forcedSqlStateOnCanonicalInsert = null;
+
         // Garantizar 0 metodos DELETE en ReservationRepository
         List<String> deleteMethods = Arrays.stream(ReservationRepository.class.getDeclaredMethods())
             .map(Method::getName)
@@ -558,6 +598,7 @@ class ReservationsBusinessTest {
     private static final class InMemoryReservationRepository extends ReservationRepository {
 
         private final Map<UUID, StoredReservationAggregate> store = new LinkedHashMap<>();
+        private String forcedSqlStateOnCanonicalInsert;
 
         @Override
         public StoredReservationAggregate insertAggregate(
@@ -567,6 +608,18 @@ class ReservationsBusinessTest {
             StoredReservationAggregate agg = new StoredReservationAggregate(header, List.copyOf(lines));
             store.put(header.id(), agg);
             return agg;
+        }
+
+        @Override
+        public StoredReservationAggregate insertAggregateWithCanonicalLocks(
+            List<UUID> canonicalResourceRoots,
+            StoredReservation header,
+            List<StoredReservationLine> lines
+        ) {
+            if (forcedSqlStateOnCanonicalInsert != null) {
+                throw new ReservationsRepositoryException("Forced failure", null, forcedSqlStateOnCanonicalInsert);
+            }
+            return insertAggregate(header, lines);
         }
 
         @Override
