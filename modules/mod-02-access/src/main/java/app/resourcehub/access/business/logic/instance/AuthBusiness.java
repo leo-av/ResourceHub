@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 public class AuthBusiness {
 
@@ -52,6 +53,7 @@ public class AuthBusiness {
     private final PersonalDataRepository personalDataRepository;
     private final Clock clock;
     private final KeyPair signingKeyPair;
+    private final Predicate<UUID> personResourceActiveChecker;
 
     public AuthBusiness(
         UserRepository userRepository,
@@ -67,6 +69,7 @@ public class AuthBusiness {
         this.personalDataRepository = null;
         this.clock = clock;
         this.signingKeyPair = signingKeyPair;
+        this.personResourceActiveChecker = personResourceId -> true;
     }
 
     public AuthBusiness(
@@ -76,6 +79,26 @@ public class AuthBusiness {
         PersonalDataRepository personalDataRepository,
         Clock clock,
         KeyPair signingKeyPair
+    ) {
+        this(
+            userRepository,
+            credentialRepository,
+            refreshTokenRepository,
+            personalDataRepository,
+            clock,
+            signingKeyPair,
+            personResourceId -> true
+        );
+    }
+
+    public AuthBusiness(
+        UserRepository userRepository,
+        LocalCredentialRepository credentialRepository,
+        RefreshTokenRepository refreshTokenRepository,
+        PersonalDataRepository personalDataRepository,
+        Clock clock,
+        KeyPair signingKeyPair,
+        Predicate<UUID> personResourceActiveChecker
     ) {
         validateDependencies(userRepository, credentialRepository, refreshTokenRepository, clock, signingKeyPair);
         if (personalDataRepository == null) {
@@ -87,6 +110,9 @@ public class AuthBusiness {
         this.personalDataRepository = personalDataRepository;
         this.clock = clock;
         this.signingKeyPair = signingKeyPair;
+        this.personResourceActiveChecker = personResourceActiveChecker != null
+            ? personResourceActiveChecker
+            : personResourceId -> true;
     }
 
     private static void validateDependencies(
@@ -255,7 +281,7 @@ public class AuthBusiness {
         }
 
         UserRole role = UserRole.valueOf(account.roleCode());
-        assertChannelAuthorization(role, channelScope);
+        assertChannelAuthorization(role, channelScope, account.linkedPersonResourceId());
 
         return issueNewSessionBundle(organizationId, account, role, channelScope);
     }
@@ -324,7 +350,7 @@ public class AuthBusiness {
             throw new AccessBusinessException(ErrorCode.UNAUTHENTICATED, "Account is not active");
         }
         UserRole role = UserRole.valueOf(account.roleCode());
-        assertChannelAuthorization(role, channelScope);
+        assertChannelAuthorization(role, channelScope, account.linkedPersonResourceId());
 
         Instant accessExpiry = now.plus(ACCESS_TOKEN_TTL);
         ActorContext actor = toActorContext(organizationId, account, role, channelScope);
@@ -381,10 +407,12 @@ public class AuthBusiness {
                 "Token scope " + claims.operationalScope() + " cannot access channel " + channelScope
             );
         }
+        UserRole role = UserRole.valueOf(claims.actorRole());
+        assertChannelAuthorization(role, channelScope, claims.linkedPersonResourceId());
         return new UserProfile(
             claims.userId(),
             claims.organizationId(),
-            UserRole.valueOf(claims.actorRole()),
+            role,
             IdentityStatus.ACTIVE,
             claims.operationalScope(),
             claims.linkedPersonResourceId()
@@ -450,15 +478,20 @@ public class AuthBusiness {
 
     private static void validateChannelScopeSupported(OperationalScope channelScope) {
         if (channelScope != OperationalScope.AMB_01_CLIENT
+            && channelScope != OperationalScope.AMB_02_PROFESSIONAL
             && channelScope != OperationalScope.AMB_03_MANAGEMENT) {
             throw new AccessBusinessException(
                 ErrorCode.SCOPE_VIOLATION,
-                "Unsupported local authentication channel scope in TT-006"
+                "Unsupported local authentication channel scope"
             );
         }
     }
 
-    private static void assertChannelAuthorization(UserRole role, OperationalScope channelScope) {
+    private void assertChannelAuthorization(
+        UserRole role,
+        OperationalScope channelScope,
+        UUID linkedPersonResourceId
+    ) {
         if (channelScope == OperationalScope.AMB_03_MANAGEMENT
             && role != UserRole.AD
             && role != UserRole.MG) {
@@ -466,6 +499,20 @@ public class AuthBusiness {
                 ErrorCode.SCOPE_VIOLATION,
                 "Role " + role + " is forbidden from console channel AMB_03_MANAGEMENT"
             );
+        }
+        if (channelScope == OperationalScope.AMB_02_PROFESSIONAL) {
+            if (role == UserRole.US) {
+                throw new AccessBusinessException(
+                    ErrorCode.SCOPE_VIOLATION,
+                    "Standard user (US) is forbidden from workspace channel AMB_02_PROFESSIONAL"
+                );
+            }
+            if (linkedPersonResourceId == null || !personResourceActiveChecker.test(linkedPersonResourceId)) {
+                throw new AccessBusinessException(
+                    ErrorCode.SCOPE_VIOLATION,
+                    "Workspace channel AMB_02_PROFESSIONAL requires an active linked PERSON resource"
+                );
+            }
         }
     }
 

@@ -8,17 +8,21 @@ import app.resourcehub.availability.repository.logic.local.TemporalBlockReposito
 import app.resourcehub.availability.repository.logic.local.WeeklyScheduleRepository;
 import app.resourcehub.availability.repository.structs.StoredRecurringSchedule;
 import app.resourcehub.availability.repository.structs.StoredTemporalBlock;
+import app.resourcehub.reservations.api.logic.services.WorkspaceAgendaService;
 import app.resourcehub.reservations.business.logic.instance.EffectiveAvailabilityBusiness;
 import app.resourcehub.reservations.business.logic.instance.ReservationBusiness;
+import app.resourcehub.reservations.business.structs.AgendaSessionItem;
 import app.resourcehub.reservations.business.structs.CreateReservationCommand;
 import app.resourcehub.reservations.business.structs.EffectiveAvailability;
 import app.resourcehub.reservations.business.structs.ModifyReservationCommand;
+import app.resourcehub.reservations.business.structs.ProfessionalAgenda;
 import app.resourcehub.reservations.business.structs.Reservation;
 import app.resourcehub.reservations.business.structs.ReservationPage;
 import app.resourcehub.reservations.business.structs.ReservationStatus;
 import app.resourcehub.reservations.business.structs.ReservationsBusinessException;
 import app.resourcehub.reservations.repository.logic.local.ReservationRepository;
 import app.resourcehub.reservations.repository.structs.ReservationsRepositoryException;
+import app.resourcehub.reservations.repository.structs.StoredAgendaEntry;
 import app.resourcehub.reservations.repository.structs.StoredReservation;
 import app.resourcehub.reservations.repository.structs.StoredReservationAggregate;
 import app.resourcehub.reservations.repository.structs.StoredReservationLine;
@@ -776,6 +780,141 @@ class ReservationsBusinessTest {
             .isEqualTo(3L);
     }
 
+    @Test
+    @DisplayName("TT-025: GET /workspace/agenda devuelve agenda propia ordenada, filtra por rango y bloquea accesos invalidos")
+    void shouldReturnProfessionalAgendaAndEnforceWorkspaceSecurity() {
+        UUID personPro1 = UUID.fromString("01936b00-0000-7000-8000-000000000051");
+        UUID personPro2 = UUID.fromString("01936b00-0000-7000-8000-000000000052");
+        catalog.put(personPro1, sampleResource(personPro1, ResourceStatus.AVAILABLE));
+        catalog.put(personPro2, sampleResource(personPro2, ResourceStatus.AVAILABLE));
+
+        ReservationBusiness proBusiness = this.reservationBusiness;
+
+        scheduleBusiness.replaceWeeklySchedules(
+            personPro1,
+            List.of(new WeeklyScheduleEntry(1, LocalTime.of(9, 0), LocalTime.of(16, 0), null, null))
+        );
+        scheduleBusiness.replaceWeeklySchedules(
+            personPro2,
+            List.of(new WeeklyScheduleEntry(1, LocalTime.of(9, 0), LocalTime.of(16, 0), null, null))
+        );
+
+        Instant t09 = Instant.parse("2026-11-30T08:00:00Z");
+        Instant t10 = Instant.parse("2026-11-30T09:00:00Z");
+        Instant t11 = Instant.parse("2026-11-30T10:00:00Z");
+        Instant t12 = Instant.parse("2026-11-30T11:00:00Z");
+
+        Reservation rLate = proBusiness.createReservation(
+            CLIENT_USER_1, new CreateReservationCommand(personPro1, t11, t12, 1, null), MADRID_ORG, "c-late"
+        );
+        Reservation rCancelled = proBusiness.createReservation(
+            CLIENT_USER_1, new CreateReservationCommand(personPro1, t09, t10, 1, null), MADRID_ORG, "c-can"
+        );
+        proBusiness.cancelReservation(CLIENT_USER_1, rCancelled.id(), "c-can-do");
+        Reservation rEarly = proBusiness.createReservation(
+            CLIENT_USER_2, new CreateReservationCommand(personPro1, t10, t11, 1, null), MADRID_ORG, "c-early"
+        );
+        proBusiness.createReservation(
+            CLIENT_USER_1, new CreateReservationCommand(personPro2, t10, t11, 1, null), MADRID_ORG, "c-pro2"
+        );
+
+        ActorContext pro1Actor = new ActorContext(
+            UUID.fromString("01936c00-0010-7000-8000-000000000051"),
+            ORG_ID,
+            ActorType.USER,
+            "EM",
+            OperationalScope.AMB_02_PROFESSIONAL,
+            personPro1,
+            Set.of()
+        );
+        ActorContext proNoLink = new ActorContext(
+            UUID.randomUUID(), ORG_ID, ActorType.USER, "EM", OperationalScope.AMB_02_PROFESSIONAL, null, Set.of()
+        );
+        ActorContext usBadScope = new ActorContext(
+            UUID.randomUUID(), ORG_ID, ActorType.USER, "US", OperationalScope.AMB_02_PROFESSIONAL, personPro1, Set.of()
+        );
+        ActorContext proMissingRes = new ActorContext(
+            UUID.randomUUID(), ORG_ID, ActorType.USER, "EM", OperationalScope.AMB_02_PROFESSIONAL, UUID.randomUUID(), Set.of()
+        );
+
+        // Guardias de seguridad
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(null, null, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.UNAUTHENTICATED);
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(CLIENT_USER_1, null, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(usBadScope, null, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(proNoLink, null, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(proMissingRes, null, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+
+        // Rango parcial o invertido
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(pro1Actor, t09, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(pro1Actor, null, t12))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(pro1Actor, t11, t11))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        // Agenda completa ordenada cronologicamente (solo activas de pro1)
+        ProfessionalAgenda fullAgenda = proBusiness.getOwnProfessionalAgenda(pro1Actor, null, null);
+        assertThat(fullAgenda.personResourceId()).isEqualTo(personPro1);
+        assertThat(fullAgenda.items()).extracting(AgendaSessionItem::reservationId)
+            .containsExactly(rEarly.id(), rLate.id());
+        assertThat(fullAgenda.items()).extracting(AgendaSessionItem::holderId)
+            .containsExactly(CLIENT_USER_2.userId(), CLIENT_USER_1.userId());
+
+        // Filtro por rango [t09, t11) excluye [t11, t12)
+        ProfessionalAgenda morningAgenda = proBusiness.getOwnProfessionalAgenda(pro1Actor, t09, t11);
+        assertThat(morningAgenda.items()).extracting(AgendaSessionItem::reservationId)
+            .containsExactly(rEarly.id());
+
+        // Si el recurso PERSON queda DISABLED (RN-ACC-003), el profesional pierde acceso a su agenda
+        catalog.put(personPro1, sampleResource(personPro1, ResourceStatus.DISABLED));
+        assertThatThrownBy(() -> proBusiness.getOwnProfessionalAgenda(pro1Actor, null, null))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // Verificacion WorkspaceAgendaService.toInternalProblem
+        WorkspaceAgendaService wsService = new WorkspaceAgendaService();
+        assertThat(wsService.toInternalProblem(
+            new ReservationsBusinessException(ErrorCode.VALIDATION_FAILED, "bad"), null, null
+        ).status()).isEqualTo(400);
+        assertThat(wsService.toInternalProblem(
+            new ReservationsBusinessException(ErrorCode.SCOPE_VIOLATION, "forbidden"), "/api/v1/workspace/agenda", "r-1"
+        ).status()).isEqualTo(403);
+        assertThat(wsService.toInternalProblem(
+            new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "unauth"), null, "r-2"
+        ).status()).isEqualTo(401);
+        assertThat(wsService.toInternalProblem(
+            new ReservationsBusinessException(ErrorCode.NOT_FOUND, "missing"), null, "r-3"
+        ).status()).isEqualTo(404);
+        assertThat(wsService.toInternalProblem(
+            new ReservationsBusinessException(ErrorCode.TRANSITION_NOT_ALLOWED, "conflict"), null, "r-4"
+        ).status()).isEqualTo(409);
+        assertThat(wsService.toInternalProblem(
+            new ReservationsBusinessException(ErrorCode.INTERNAL_ERROR, "err"), null, "r-5"
+        ).status()).isEqualTo(500);
+    }
+
     private static CatalogResource sampleResource(UUID id, ResourceStatus status) {
         return new CatalogResource(
             id,
@@ -888,6 +1027,26 @@ class ReservationsBusinessTest {
             int from = Math.min(offset, owned.size());
             int to = Math.min(offset + limit, owned.size());
             return List.copyOf(owned.subList(from, to));
+        }
+
+        @Override
+        public List<StoredAgendaEntry> findActiveAgendaLinesByResource(
+            UUID resourceId,
+            Instant fromInclusive,
+            Instant toExclusive
+        ) {
+            return store.values().stream()
+                .filter(agg -> "CONFIRMED".equals(agg.reservation().status())
+                    || "PENDING".equals(agg.reservation().status()))
+                .flatMap(agg -> agg.lines().stream()
+                    .filter(line -> "ACTIVE".equals(line.status())
+                        && line.resourceId().equals(resourceId)
+                        && (fromInclusive == null
+                            || (line.startAt().isBefore(toExclusive) && fromInclusive.isBefore(line.endAt()))))
+                    .map(line -> new StoredAgendaEntry(agg.reservation(), line)))
+                .sorted(Comparator.comparing((StoredAgendaEntry entry) -> entry.line().startAt())
+                    .thenComparing(entry -> entry.line().id()))
+                .toList();
         }
 
         @Override

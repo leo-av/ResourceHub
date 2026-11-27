@@ -261,6 +261,49 @@ public class ReservationRepository extends PostgresRepository {
         }, "ReservationRepository.countByHolderId");
     }
 
+    public List<app.resourcehub.reservations.repository.structs.StoredAgendaEntry> findActiveAgendaLinesByResource(
+        UUID resourceId,
+        Instant fromInclusive,
+        Instant toExclusive
+    ) {
+        String sql = """
+            SELECT r.id, r.requester_id, r.holder_id, r.origin_scope, r.status, r.pending_reason, r.expires_at,
+                   r.series_id, r.series_occurrence_index, r.total_amount_minor, r.currency_code, r.payment_status,
+                   r.attendance_status, r.attendance_marked_by_user_id, r.attendance_marked_at,
+                   r.cancellation_source, r.caused_by_block_id, r.version, r.created_at, r.updated_at,
+                   l.id AS line_id, l.reservation_id AS line_reservation_id, l.line_number,
+                   l.resource_id, l.resource_root_id, l.start_at, l.end_at, l.requested_units,
+                   l.is_exclusive, l.status AS line_status, l.line_amount_minor,
+                   l.currency_code AS line_currency_code
+            FROM reservations.reservation_line l
+            JOIN reservations.reservation r ON r.id = l.reservation_id
+            WHERE l.resource_id = ?
+              AND l.status = 'ACTIVE'
+              AND r.status IN ('CONFIRMED', 'PENDING')
+              AND (?::timestamptz IS NULL
+                   OR tstzrange(l.start_at, l.end_at, '[)') && tstzrange(?::timestamptz, ?::timestamptz, '[)'))
+            ORDER BY l.start_at ASC, l.id ASC
+            """;
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setObject(1, resourceId);
+                setNullableTimestamp(ps, 2, fromInclusive);
+                setNullableTimestamp(ps, 3, fromInclusive);
+                setNullableTimestamp(ps, 4, toExclusive);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<app.resourcehub.reservations.repository.structs.StoredAgendaEntry> entries = new ArrayList<>();
+                    while (rs.next()) {
+                        entries.add(new app.resourcehub.reservations.repository.structs.StoredAgendaEntry(
+                            mapHeader(rs),
+                            mapAliasedAgendaLine(rs)
+                        ));
+                    }
+                    return entries;
+                }
+            }
+        }, "ReservationRepository.findActiveAgendaLinesByResource");
+    }
+
     public List<StoredReservationLine> findActiveLinesOverlapping(
         UUID resourceId,
         Instant rangeStart,
@@ -582,6 +625,23 @@ public class ReservationRepository extends PostgresRepository {
             rs.getString("status"),
             rs.getLong("line_amount_minor"),
             rs.getString("currency_code")
+        );
+    }
+
+    private static StoredReservationLine mapAliasedAgendaLine(ResultSet rs) throws SQLException {
+        return new StoredReservationLine(
+            rs.getObject("line_id", UUID.class),
+            rs.getObject("line_reservation_id", UUID.class),
+            rs.getShort("line_number"),
+            rs.getObject("resource_id", UUID.class),
+            rs.getObject("resource_root_id", UUID.class),
+            rs.getTimestamp("start_at").toInstant(),
+            rs.getTimestamp("end_at").toInstant(),
+            rs.getInt("requested_units"),
+            rs.getBoolean("is_exclusive"),
+            rs.getString("line_status"),
+            rs.getLong("line_amount_minor"),
+            rs.getString("line_currency_code")
         );
     }
 

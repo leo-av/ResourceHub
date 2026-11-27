@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 public final class B {
 
@@ -23,23 +24,32 @@ public final class B {
 
     public static void init() {
         init(Clock.systemUTC(), orgId -> Boolean.FALSE, ev -> {
-        });
+        }, personId -> Boolean.TRUE);
     }
 
     public static void init(Clock clock) {
         init(clock, orgId -> Boolean.FALSE, ev -> {
-        });
+        }, personId -> Boolean.TRUE);
     }
 
     public static void init(Clock clock, Function<UUID, Boolean> allowStandardUserSpaceBookingResolver) {
         init(clock, allowStandardUserSpaceBookingResolver, ev -> {
-        });
+        }, personId -> Boolean.TRUE);
     }
 
     public static void init(
         Clock clock,
         Function<UUID, Boolean> allowStandardUserSpaceBookingResolver,
         Consumer<UserPersonLinkDisabledEvent> personLinkDisabledListener
+    ) {
+        init(clock, allowStandardUserSpaceBookingResolver, personLinkDisabledListener, personId -> Boolean.TRUE);
+    }
+
+    public static void init(
+        Clock clock,
+        Function<UUID, Boolean> allowStandardUserSpaceBookingResolver,
+        Consumer<UserPersonLinkDisabledEvent> personLinkDisabledListener,
+        Predicate<UUID> personResourceActiveChecker
     ) {
         Clock effectiveClock = clock != null ? clock : Clock.systemUTC();
         userBusiness = new UserBusiness(
@@ -56,7 +66,8 @@ public final class B {
             R.refreshTokens(),
             R.personalData(),
             effectiveClock,
-            JwtTokenUtils.generateEd25519KeyPair()
+            JwtTokenUtils.generateEd25519KeyPair(),
+            personResourceActiveChecker
         );
         authorizationBusiness = new AuthorizationBusiness(allowStandardUserSpaceBookingResolver);
     }
