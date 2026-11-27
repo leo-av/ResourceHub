@@ -4,13 +4,11 @@
 -- Propósito (`TT-011` / `SPEC-RES-001`):
 --   1. Crear `reservations.reservation` (`EL-RES-02`, 20 cols, núcleo ACID).
 --   2. Crear `reservations.reservation_line` (`EL-RES-03`, 12 cols, GiST).
---   3. Mantener FK intra-esquema vía search_path local y 0 FKs inter-esquema.
+--   3. Declarar FK intra-esquema sin referencias inter-esquema (`ADR-007`).
 -- =============================================================================
 
-SET LOCAL search_path TO reservations, public;
-
 -- 1. Tabla `reservations.reservation` (EL-RES-02, 20 columnas)
-CREATE TABLE IF NOT EXISTS reservation (
+CREATE TABLE IF NOT EXISTS reservations.reservation (
     id                            UUID         NOT NULL,
     requester_id                  UUID         NOT NULL,
     holder_id                     UUID         NOT NULL,
@@ -89,21 +87,21 @@ CREATE TABLE IF NOT EXISTS reservation (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reservation_holder
-    ON reservation (holder_id, created_at DESC);
+    ON reservations.reservation (holder_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_reservation_status_expires
-    ON reservation (status, expires_at)
+    ON reservations.reservation (status, expires_at)
     WHERE status = 'PENDING';
 
 CREATE INDEX IF NOT EXISTS idx_reservation_series
-    ON reservation (series_id)
+    ON reservations.reservation (series_id)
     WHERE series_id IS NOT NULL;
 
-COMMENT ON TABLE reservation IS
+COMMENT ON TABLE reservations.reservation IS
     'EL-RES-02: Cabecera transaccional ACID de reservas (20 columnas, bloqueo optimista version, 0 FKs inter-esquema).';
 
 -- 2. Tabla `reservations.reservation_line` (EL-RES-03, 12 columnas)
-CREATE TABLE IF NOT EXISTS reservation_line (
+CREATE TABLE IF NOT EXISTS reservations.reservation_line (
     id                UUID        NOT NULL,
     reservation_id    UUID        NOT NULL,
     line_number       SMALLINT    NOT NULL,
@@ -117,8 +115,6 @@ CREATE TABLE IF NOT EXISTS reservation_line (
     line_amount_minor BIGINT      NOT NULL DEFAULT 0,
     currency_code     CHAR(3)     NOT NULL DEFAULT 'EUR',
     CONSTRAINT pk_reservation_line PRIMARY KEY (id),
-    CONSTRAINT fk_res_line_reservation FOREIGN KEY (reservation_id)
-        REFERENCES reservation (id) ON DELETE RESTRICT,
     CONSTRAINT uq_res_line_number UNIQUE (reservation_id, line_number),
     CONSTRAINT chk_line_number CHECK (line_number >= 1),
     CONSTRAINT chk_line_interval CHECK (start_at < end_at),
@@ -128,21 +124,34 @@ CREATE TABLE IF NOT EXISTS reservation_line (
     CONSTRAINT chk_line_currency CHECK (currency_code ~ '^[A-Z]{3}$')
 );
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_constraint
+        WHERE conname = 'fk_res_line_reservation'
+    ) THEN
+        PERFORM pg_catalog.set_config('search_path', 'reservations, public', true);
+        ALTER TABLE reservations.reservation_line
+            ADD CONSTRAINT fk_res_line_reservation
+            FOREIGN KEY (reservation_id) REFERENCES reservation (id) ON DELETE RESTRICT;
+    END IF;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_res_line_reservation
-    ON reservation_line (reservation_id);
+    ON reservations.reservation_line (reservation_id);
 
 CREATE INDEX IF NOT EXISTS idx_res_line_active_gist
-    ON reservation_line USING GIST (
+    ON reservations.reservation_line USING GIST (
         resource_id,
         tstzrange(start_at, end_at, '[)')
     )
     WHERE status = 'ACTIVE';
 
 CREATE INDEX IF NOT EXISTS idx_res_line_root_active
-    ON reservation_line (resource_root_id, start_at)
+    ON reservations.reservation_line (resource_root_id, start_at)
     WHERE status = 'ACTIVE';
 
-COMMENT ON TABLE reservation_line IS
+COMMENT ON TABLE reservations.reservation_line IS
     'EL-RES-03: Líneas de reserva por recurso con rango semiabierto [start_at, end_at) e índice GiST activo (ADR-008).';
-
-SET LOCAL search_path TO public;
