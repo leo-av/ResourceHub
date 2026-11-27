@@ -4,7 +4,10 @@ import app.resourcehub.availability.api.A;
 import app.resourcehub.availability.business.B;
 import app.resourcehub.availability.business.structs.AvailabilityBusinessException;
 import app.resourcehub.availability.business.structs.BlockOrigin;
+import app.resourcehub.availability.business.structs.CalendarException;
+import app.resourcehub.availability.business.structs.CreateCalendarExceptionCommand;
 import app.resourcehub.availability.business.structs.CreateTemporalBlockCommand;
+import app.resourcehub.availability.business.structs.ExceptionType;
 import app.resourcehub.availability.business.structs.RecurringScheduleSlot;
 import app.resourcehub.availability.business.structs.TemporalBlock;
 import app.resourcehub.availability.business.structs.WeeklyScheduleEntry;
@@ -33,6 +36,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -52,7 +56,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("TT-009 [PRU-03/04/05] — Flyway V5 availability (8 + 12 cols), API Console y COMP-GW 200003")
+@DisplayName("TT-009/TT-015 [PRU-03/04/05] — Flyway V5+V8 availability, excepciones Nivel 3 y COMP-GW 200003")
 class AvailabilityPostgresIT {
 
     private static final String POSTGRES_IMAGE = "postgres:16.6-bookworm";
@@ -99,13 +103,14 @@ class AvailabilityPostgresIT {
     }
 
     @Test
-    @DisplayName("PRU-03: V5 crea recurring_schedule (8 cols) y temporal_block (12 cols) con constraints SQL bajo dba_api")
+    @DisplayName("PRU-03: V5/V8 crean recurring_schedule (8), temporal_block (12) y availability_exception (9) bajo dba_api")
     void shouldCreateAvailabilityTablesAndEnforceSqlConstraints() throws SQLException {
-        assertThat(migrateResult.migrationsExecuted).isGreaterThanOrEqualTo(5);
+        assertThat(migrateResult.migrationsExecuted).isGreaterThanOrEqualTo(6);
 
         try (Connection conn = dbaApiDataSource.getConnection()) {
             assertThat(countTableColumns(conn, "availability", "recurring_schedule")).isEqualTo(8);
             assertThat(countTableColumns(conn, "availability", "temporal_block")).isEqualTo(12);
+            assertThat(countTableColumns(conn, "availability", "availability_exception")).isEqualTo(9);
 
             try (Statement stmt = conn.createStatement()) {
                 assertThatThrownBy(() -> stmt.executeUpdate("""
@@ -152,6 +157,46 @@ class AvailabilityPostgresIT {
                         TIMESTAMPTZ '2026-12-01T10:00:00Z',
                         TRUE,
                         TRUE,
+                        now()
+                    )
+                    """))
+                    .isInstanceOf(SQLException.class)
+                    .extracting(ex -> ((SQLException) ex).getSQLState())
+                    .isEqualTo("23514");
+
+                assertThatThrownBy(() -> stmt.executeUpdate("""
+                    INSERT INTO availability.availability_exception (
+                        id, resource_id, exception_date, exception_type,
+                        start_at, end_at, reason, created_by_user_id, created_at
+                    ) VALUES (
+                        '01936b00-0010-7000-8000-000000000004',
+                        '01936b00-0010-7000-8000-000000000099',
+                        DATE '2026-12-25',
+                        'INVALID_TYPE',
+                        TIMESTAMPTZ '2026-12-25T00:00:00Z',
+                        TIMESTAMPTZ '2026-12-25T23:00:00Z',
+                        'Test',
+                        '01936b00-0020-7000-8000-000000000001',
+                        now()
+                    )
+                    """))
+                    .isInstanceOf(SQLException.class)
+                    .extracting(ex -> ((SQLException) ex).getSQLState())
+                    .isEqualTo("23514");
+
+                assertThatThrownBy(() -> stmt.executeUpdate("""
+                    INSERT INTO availability.availability_exception (
+                        id, resource_id, exception_date, exception_type,
+                        start_at, end_at, reason, created_by_user_id, created_at
+                    ) VALUES (
+                        '01936b00-0010-7000-8000-000000000005',
+                        '01936b00-0010-7000-8000-000000000099',
+                        DATE '2026-12-25',
+                        'CLOSED',
+                        TIMESTAMPTZ '2026-12-25T10:00:00Z',
+                        TIMESTAMPTZ '2026-12-25T10:00:00Z',
+                        'Test',
+                        '01936b00-0020-7000-8000-000000000001',
                         now()
                     )
                     """))
@@ -283,6 +328,70 @@ class AvailabilityPostgresIT {
             .isInstanceOf(AvailabilityBusinessException.class)
             .extracting(ex -> ((AvailabilityBusinessException) ex).getErrorCode())
             .isEqualTo(ErrorCode.ALREADY_EXISTS);
+
+        // TT-015 [PRU-04/05]: Excepciones Nivel 3 (CLOSED y CUSTOM_HOURS) en Postgres y precedencia sobre Nivel 4 / bajo Nivel 2
+        ResponseWrapper<CalendarException> closedExc = A.consoleAvailability().createException(
+            adminActor,
+            sala.id(),
+            new CreateCalendarExceptionCommand(LocalDate.of(2026, 1, 25), ExceptionType.CLOSED, null, null, "Festivo"),
+            madridOrg,
+            "req-tt015-exc-01",
+            FIXED_CLOCK
+        );
+        assertThat(closedExc.data().type()).isEqualTo(ExceptionType.CLOSED);
+
+        ResponseWrapper<CalendarException> customExc = A.consoleAvailability().createException(
+            adminActor,
+            sala.id(),
+            new CreateCalendarExceptionCommand(
+                LocalDate.of(2026, 1, 24),
+                ExceptionType.CUSTOM_HOURS,
+                LocalTime.of(10, 0),
+                LocalTime.of(13, 0),
+                "Apertura extraordinaria"
+            ),
+            madridOrg,
+            "req-tt015-exc-02",
+            FIXED_CLOCK
+        );
+        assertThat(customExc.data().type()).isEqualTo(ExceptionType.CUSTOM_HOURS);
+        assertThat(A.consoleAvailability().listExceptions(adminActor, sala.id(), "req-tt015-exc-03", FIXED_CLOCK).data())
+            .hasSize(2);
+
+        A.consoleAvailability().createBlock(
+            adminActor,
+            sala.id(),
+            new CreateTemporalBlockCommand(
+                BlockOrigin.MAINTENANCE,
+                Instant.parse("2026-01-24T10:00:00Z"),
+                Instant.parse("2026-01-24T11:00:00Z"),
+                false,
+                null,
+                "Revision sobre excepcion"
+            ),
+            "req-tt015-blk-01",
+            FIXED_CLOCK
+        );
+        assertThat(B.rules().evaluateOpenWindows(
+            sala.id(),
+            new TimeInterval(Instant.parse("2026-01-24T08:00:00Z"), Instant.parse("2026-01-24T14:00:00Z")),
+            madridOrg
+        )).containsExactly(
+            new TimeInterval(Instant.parse("2026-01-24T09:00:00Z"), Instant.parse("2026-01-24T10:00:00Z")),
+            new TimeInterval(Instant.parse("2026-01-24T11:00:00Z"), Instant.parse("2026-01-24T12:00:00Z"))
+        );
+
+        assertThatThrownBy(() -> A.consoleAvailability().createException(
+            endUserActor,
+            sala.id(),
+            new CreateCalendarExceptionCommand(LocalDate.of(2026, 2, 1), ExceptionType.CLOSED, null, null, "No autorizado"),
+            madridOrg,
+            "req-tt015-403",
+            FIXED_CLOCK
+        ))
+            .isInstanceOf(AvailabilityBusinessException.class)
+            .extracting(ex -> ((AvailabilityBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
 
         // PRU-05: Rol US recibe SCOPE_VIOLATION -> COMP-GW traduce a 403 / 200003
         AvailabilityBusinessException scopeEx = null;

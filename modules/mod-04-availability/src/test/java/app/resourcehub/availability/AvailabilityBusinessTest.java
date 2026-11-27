@@ -4,12 +4,16 @@ import app.resourcehub.availability.business.logic.instance.AvailabilityRulesBus
 import app.resourcehub.availability.business.logic.instance.ScheduleBusiness;
 import app.resourcehub.availability.business.structs.AvailabilityBusinessException;
 import app.resourcehub.availability.business.structs.BlockOrigin;
+import app.resourcehub.availability.business.structs.CalendarException;
+import app.resourcehub.availability.business.structs.ExceptionType;
 import app.resourcehub.availability.business.structs.RecurringScheduleSlot;
 import app.resourcehub.availability.business.structs.TemporalBlock;
 import app.resourcehub.availability.business.structs.WeeklyScheduleEntry;
+import app.resourcehub.availability.repository.logic.local.CalendarExceptionRepository;
 import app.resourcehub.availability.repository.logic.local.TemporalBlockRepository;
 import app.resourcehub.availability.repository.logic.local.WeeklyScheduleRepository;
 import app.resourcehub.availability.repository.structs.AvailabilityRepositoryException;
+import app.resourcehub.availability.repository.structs.StoredCalendarException;
 import app.resourcehub.availability.repository.structs.StoredRecurringSchedule;
 import app.resourcehub.availability.repository.structs.StoredTemporalBlock;
 import app.resourcehub.resources.business.structs.CatalogResource;
@@ -38,7 +42,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("TT-009 [PRU-01] — Horarios recurrentes IANA (MDD-008) y bloqueos D-5 MOD-04")
+@DisplayName("TT-009/TT-015 [PRU-01] — Horarios recurrentes IANA, excepciones Nivel 3 y bloqueos Nivel 2 MOD-04")
 class AvailabilityBusinessTest {
 
     private static final Instant FIXED_NOW = Instant.parse("2026-11-27T16:00:00Z");
@@ -47,10 +51,12 @@ class AvailabilityBusinessTest {
     private static final UUID TYPE_ID = UUID.fromString("01936b00-0000-7000-8000-000000000010");
     private static final UUID RESOURCE_ID = UUID.fromString("01936b00-0000-7000-8000-000000000020");
     private static final UUID DISABLED_RESOURCE_ID = UUID.fromString("01936b00-0000-7000-8000-000000000021");
+    private static final UUID ADMIN_USER_ID = UUID.fromString("01936b00-0000-7000-8000-000000000099");
     private static final OrganizationContext MADRID_ORG = new OrganizationContext(ORG_ID, "clinic-madrid", "Europe/Madrid");
 
     private InMemoryWeeklyScheduleRepository scheduleRepository;
     private InMemoryTemporalBlockRepository temporalBlockRepository;
+    private InMemoryCalendarExceptionRepository exceptionRepository;
     private ScheduleBusiness scheduleBusiness;
     private AvailabilityRulesBusiness rulesBusiness;
     private Map<UUID, CatalogResource> catalog;
@@ -59,6 +65,7 @@ class AvailabilityBusinessTest {
     void setUp() {
         scheduleRepository = new InMemoryWeeklyScheduleRepository();
         temporalBlockRepository = new InMemoryTemporalBlockRepository();
+        exceptionRepository = new InMemoryCalendarExceptionRepository();
         catalog = new LinkedHashMap<>();
         catalog.put(RESOURCE_ID, sampleResource(RESOURCE_ID, ResourceStatus.AVAILABLE));
         catalog.put(DISABLED_RESOURCE_ID, sampleResource(DISABLED_RESOURCE_ID, ResourceStatus.DISABLED));
@@ -70,7 +77,13 @@ class AvailabilityBusinessTest {
             return found;
         };
         scheduleBusiness = new ScheduleBusiness(scheduleRepository, lookup, FIXED_CLOCK);
-        rulesBusiness = new AvailabilityRulesBusiness(temporalBlockRepository, scheduleBusiness, lookup, FIXED_CLOCK);
+        rulesBusiness = new AvailabilityRulesBusiness(
+            temporalBlockRepository,
+            exceptionRepository,
+            scheduleBusiness,
+            lookup,
+            FIXED_CLOCK
+        );
     }
 
     @Test
@@ -92,6 +105,9 @@ class AvailabilityBusinessTest {
             .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new AvailabilityRulesBusiness(temporalBlockRepository, scheduleBusiness, lookup, null))
             .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new AvailabilityRulesBusiness(
+            temporalBlockRepository, null, scheduleBusiness, lookup, FIXED_CLOCK
+        )).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -417,6 +433,189 @@ class AvailabilityBusinessTest {
         assertThat(rulesBusiness.hasActiveBlockOverlapping(RESOURCE_ID, futureRange)).isTrue();
     }
 
+    @Test
+    @DisplayName("TT-015 [D-5 Nivel 3]: Excepciones CLOSED/CUSTOM_HOURS prevalecen sobre Nivel 4 y ceden ante Nivel 2 y Nivel 1")
+    void shouldApplyLevel3ExceptionsPrecedenceAndValidateInputs() {
+        scheduleBusiness.replaceWeeklySchedules(
+            RESOURCE_ID,
+            List.of(new WeeklyScheduleEntry(5, LocalTime.of(9, 0), LocalTime.of(18, 0), null, null))
+        );
+
+        // 1. CLOSED dia completo (viernes 2026-12-25) anula horario semanal
+        LocalDate christmasFriday = LocalDate.of(2026, 12, 25);
+        CalendarException closedDay = rulesBusiness.registerException(
+            RESOURCE_ID,
+            christmasFriday,
+            ExceptionType.CLOSED,
+            null,
+            null,
+            "Navidad",
+            ADMIN_USER_ID,
+            MADRID_ORG
+        );
+        assertThat(closedDay.type()).isEqualTo(ExceptionType.CLOSED);
+        TimeInterval christmasRange = new TimeInterval(
+            Instant.parse("2026-12-25T07:00:00Z"),
+            Instant.parse("2026-12-25T19:00:00Z")
+        );
+        assertThat(rulesBusiness.evaluateScheduleWithExceptions(RESOURCE_ID, christmasRange, MADRID_ORG)).isEmpty();
+        assertThat(rulesBusiness.evaluateOpenWindows(RESOURCE_ID, christmasRange, MADRID_ORG)).isEmpty();
+
+        // 2. CLOSED parcial sobre otro viernes (2026-12-18 [12:00, 14:00) IANA = [11:00Z, 13:00Z))
+        LocalDate partialFriday = LocalDate.of(2026, 12, 18);
+        rulesBusiness.registerException(
+            RESOURCE_ID,
+            partialFriday,
+            ExceptionType.CLOSED,
+            LocalTime.of(12, 0),
+            LocalTime.of(14, 0),
+            "Cierre mediodia",
+            ADMIN_USER_ID,
+            MADRID_ORG
+        );
+        TimeInterval partialFridayRange = new TimeInterval(
+            Instant.parse("2026-12-18T08:00:00Z"),
+            Instant.parse("2026-12-18T17:00:00Z")
+        );
+        assertThat(rulesBusiness.evaluateOpenWindows(RESOURCE_ID, partialFridayRange, MADRID_ORG)).containsExactly(
+            new TimeInterval(Instant.parse("2026-12-18T08:00:00Z"), Instant.parse("2026-12-18T11:00:00Z")),
+            new TimeInterval(Instant.parse("2026-12-18T13:00:00Z"), Instant.parse("2026-12-18T17:00:00Z"))
+        );
+
+        // 3. CUSTOM_HOURS abre domingo cerrado (2026-12-27 [10:00, 12:00) + [12:00, 14:00) + [15:00, 17:00))
+        // y sustituye horario semanal de viernes (2026-12-11)
+        LocalDate sunday = LocalDate.of(2026, 12, 27);
+        rulesBusiness.registerException(
+            RESOURCE_ID, sunday, ExceptionType.CUSTOM_HOURS,
+            LocalTime.of(10, 0), LocalTime.of(12, 0), "Apertura manana", ADMIN_USER_ID, MADRID_ORG
+        );
+        rulesBusiness.registerException(
+            RESOURCE_ID, sunday, ExceptionType.CUSTOM_HOURS,
+            LocalTime.of(11, 30), LocalTime.of(14, 0), "Extension solapada", ADMIN_USER_ID, MADRID_ORG
+        );
+        rulesBusiness.registerException(
+            RESOURCE_ID, sunday, ExceptionType.CUSTOM_HOURS,
+            LocalTime.of(15, 0), LocalTime.of(17, 0), "Tarde especial", ADMIN_USER_ID, MADRID_ORG
+        );
+        // Bloqueo Nivel 2 [11:00, 12:00) IANA = [10:00Z, 11:00Z) sobre CUSTOM_HOURS [09:00Z, 13:00Z)
+        rulesBusiness.registerBlock(
+            RESOURCE_ID, BlockOrigin.MAINTENANCE,
+            Instant.parse("2026-12-27T10:00:00Z"),
+            Instant.parse("2026-12-27T11:00:00Z"),
+            false, null, "Reforma", ADMIN_USER_ID
+        );
+        TimeInterval sundayRange = new TimeInterval(
+            Instant.parse("2026-12-27T09:30:00Z"),
+            Instant.parse("2026-12-27T15:30:00Z")
+        );
+        assertThat(rulesBusiness.evaluateOpenWindows(RESOURCE_ID, sundayRange, MADRID_ORG)).containsExactly(
+            new TimeInterval(Instant.parse("2026-12-27T09:30:00Z"), Instant.parse("2026-12-27T10:00:00Z")),
+            new TimeInterval(Instant.parse("2026-12-27T11:00:00Z"), Instant.parse("2026-12-27T13:00:00Z")),
+            new TimeInterval(Instant.parse("2026-12-27T14:00:00Z"), Instant.parse("2026-12-27T15:30:00Z"))
+        );
+
+        // CUSTOM_HOURS fuera de rango exacto (para cubrir rama where clampedStart >= clampedEnd) y reemplazo viernes 2026-12-11
+        LocalDate fridayCustom = LocalDate.of(2026, 12, 11);
+        rulesBusiness.registerException(
+            RESOURCE_ID, fridayCustom, ExceptionType.CUSTOM_HOURS,
+            LocalTime.of(10, 0), LocalTime.of(12, 0), "Horario reducido", ADMIN_USER_ID, MADRID_ORG
+        );
+        assertThat(rulesBusiness.evaluateScheduleWithExceptions(
+            RESOURCE_ID,
+            new TimeInterval(Instant.parse("2026-12-11T08:00:00Z"), Instant.parse("2026-12-11T17:00:00Z")),
+            MADRID_ORG
+        )).containsExactly(
+            new TimeInterval(Instant.parse("2026-12-11T09:00:00Z"), Instant.parse("2026-12-11T11:00:00Z"))
+        );
+        // Rango con una CUSTOM_HOURS cuyo clamping empieza exactamente cuando empieza el rango y termina despues
+        assertThat(rulesBusiness.evaluateScheduleWithExceptions(
+            RESOURCE_ID,
+            new TimeInterval(Instant.parse("2026-12-27T08:00:00Z"), Instant.parse("2026-12-27T17:00:00Z")),
+            MADRID_ORG
+        )).containsExactly(
+            new TimeInterval(Instant.parse("2026-12-27T09:00:00Z"), Instant.parse("2026-12-27T13:00:00Z")),
+            new TimeInterval(Instant.parse("2026-12-27T14:00:00Z"), Instant.parse("2026-12-27T16:00:00Z"))
+        );
+
+        assertThat(rulesBusiness.listExceptions(RESOURCE_ID)).hasSize(6);
+        assertThat(rulesBusiness.evaluateScheduleWithExceptions(
+            DISABLED_RESOURCE_ID, sundayRange, MADRID_ORG
+        )).isEmpty();
+    }
+
+    @Test
+    @DisplayName("TT-015: Validaciones de entrada, constructor legacy de 4 args y excepciones invalidas")
+    void shouldValidateExceptionsAndSupportLegacyFourArgConstructor() {
+        Function<UUID, CatalogResource> lookup = catalog::get;
+        AvailabilityRulesBusiness legacyRules = new AvailabilityRulesBusiness(
+            temporalBlockRepository, scheduleBusiness, lookup, FIXED_CLOCK
+        );
+        scheduleBusiness.replaceWeeklySchedules(
+            RESOURCE_ID,
+            List.of(new WeeklyScheduleEntry(5, LocalTime.of(9, 0), LocalTime.of(12, 0), null, null))
+        );
+        assertThat(legacyRules.evaluateOpenWindows(
+            RESOURCE_ID,
+            new TimeInterval(Instant.parse("2026-12-04T08:00:00Z"), Instant.parse("2026-12-04T11:00:00Z")),
+            MADRID_ORG
+        )).hasSize(1);
+        assertThatThrownBy(() -> legacyRules.registerException(
+            RESOURCE_ID, LocalDate.of(2026, 12, 4), ExceptionType.CLOSED, null, null, null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> legacyRules.listExceptions(RESOURCE_ID))
+            .isInstanceOf(IllegalStateException.class);
+
+        LocalDate date = LocalDate.of(2026, 12, 30);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            null, date, ExceptionType.CLOSED, null, null, null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, null, ExceptionType.CLOSED, null, null, null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, null, null, null, null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, ExceptionType.CLOSED, null, null, null, null, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, ExceptionType.CLOSED, null, null, null, ADMIN_USER_ID, null
+        )).isInstanceOf(AvailabilityBusinessException.class);
+
+        // CLOSED con solo startLocalTime != null o solo endLocalTime != null -> AVAILABILITY_INVALID_INTERVAL
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, ExceptionType.CLOSED, LocalTime.of(9, 0), null, null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class)
+            .extracting(ex -> ((AvailabilityBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.AVAILABILITY_INVALID_INTERVAL);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, ExceptionType.CLOSED, null, LocalTime.of(12, 0), null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class);
+
+        // CUSTOM_HOURS sin franja o invertida -> AVAILABILITY_INVALID_INTERVAL
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, ExceptionType.CUSTOM_HOURS, null, LocalTime.of(12, 0), null, ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class)
+            .extracting(ex -> ((AvailabilityBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.AVAILABILITY_INVALID_INTERVAL);
+        assertThatThrownBy(() -> rulesBusiness.registerException(
+            RESOURCE_ID, date, ExceptionType.CUSTOM_HOURS, LocalTime.of(14, 0), LocalTime.of(12, 0), null,
+            ADMIN_USER_ID, MADRID_ORG
+        )).isInstanceOf(AvailabilityBusinessException.class)
+            .extracting(ex -> ((AvailabilityBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.AVAILABILITY_INVALID_INTERVAL);
+
+        assertThatThrownBy(() -> rulesBusiness.listExceptions(null))
+            .isInstanceOf(AvailabilityBusinessException.class);
+        TimeInterval dummyInterval = new TimeInterval(FIXED_NOW, FIXED_NOW.plusSeconds(60));
+        assertThatThrownBy(() -> rulesBusiness.evaluateScheduleWithExceptions(null, dummyInterval, MADRID_ORG))
+            .isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.evaluateScheduleWithExceptions(RESOURCE_ID, null, MADRID_ORG))
+            .isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.evaluateScheduleWithExceptions(RESOURCE_ID, dummyInterval, null))
+            .isInstanceOf(AvailabilityBusinessException.class);
+    }
+
     private static CatalogResource sampleResource(UUID id, ResourceStatus status) {
         return new CatalogResource(
             id,
@@ -513,6 +712,40 @@ class AvailabilityBusinessTest {
             );
             store.put(id, released);
             return released;
+        }
+    }
+
+    private static final class InMemoryCalendarExceptionRepository extends CalendarExceptionRepository {
+
+        private final Map<UUID, StoredCalendarException> store = new LinkedHashMap<>();
+
+        @Override
+        public StoredCalendarException insert(StoredCalendarException exception) {
+            store.put(exception.id(), exception);
+            return exception;
+        }
+
+        @Override
+        public Optional<StoredCalendarException> findById(UUID id) {
+            return Optional.ofNullable(store.get(id));
+        }
+
+        @Override
+        public List<StoredCalendarException> findByResourceId(UUID resourceId) {
+            return store.values().stream()
+                .filter(e -> e.resourceId().equals(resourceId))
+                .sorted(Comparator.comparing(StoredCalendarException::exceptionDate)
+                    .thenComparing(StoredCalendarException::startAt))
+                .toList();
+        }
+
+        @Override
+        public List<StoredCalendarException> findOverlapping(UUID resourceId, Instant rangeStart, Instant rangeEnd) {
+            return store.values().stream()
+                .filter(e -> e.resourceId().equals(resourceId))
+                .filter(e -> e.startAt().isBefore(rangeEnd) && rangeStart.isBefore(e.endAt()))
+                .sorted(Comparator.comparing(StoredCalendarException::startAt))
+                .toList();
         }
     }
 }

@@ -2,9 +2,13 @@ package app.resourcehub.availability.business.logic.instance;
 
 import app.resourcehub.availability.business.structs.AvailabilityBusinessException;
 import app.resourcehub.availability.business.structs.BlockOrigin;
+import app.resourcehub.availability.business.structs.CalendarException;
+import app.resourcehub.availability.business.structs.ExceptionType;
 import app.resourcehub.availability.business.structs.TemporalBlock;
+import app.resourcehub.availability.repository.logic.local.CalendarExceptionRepository;
 import app.resourcehub.availability.repository.logic.local.TemporalBlockRepository;
 import app.resourcehub.availability.repository.structs.AvailabilityRepositoryException;
+import app.resourcehub.availability.repository.structs.StoredCalendarException;
 import app.resourcehub.availability.repository.structs.StoredTemporalBlock;
 import app.resourcehub.resources.business.structs.CatalogResource;
 import app.resourcehub.resources.business.structs.ResourceStatus;
@@ -14,8 +18,14 @@ import app.resourcehub.shared.business.structs.TimeInterval;
 import app.resourcehub.shared.business.utils.UuidV7Utils;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -24,11 +34,44 @@ public class AvailabilityRulesBusiness {
     private static final int MAX_REASON_LENGTH = 255;
 
     private final TemporalBlockRepository temporalBlockRepository;
+    private final CalendarExceptionRepository calendarExceptionRepository;
     private final ScheduleBusiness scheduleBusiness;
     private final Function<UUID, CatalogResource> resourceLookup;
     private final Clock clock;
 
     public AvailabilityRulesBusiness(
+        TemporalBlockRepository temporalBlockRepository,
+        ScheduleBusiness scheduleBusiness,
+        Function<UUID, CatalogResource> resourceLookup,
+        Clock clock
+    ) {
+        validateDependencies(temporalBlockRepository, scheduleBusiness, resourceLookup, clock);
+        this.temporalBlockRepository = temporalBlockRepository;
+        this.calendarExceptionRepository = null;
+        this.scheduleBusiness = scheduleBusiness;
+        this.resourceLookup = resourceLookup;
+        this.clock = clock;
+    }
+
+    public AvailabilityRulesBusiness(
+        TemporalBlockRepository temporalBlockRepository,
+        CalendarExceptionRepository calendarExceptionRepository,
+        ScheduleBusiness scheduleBusiness,
+        Function<UUID, CatalogResource> resourceLookup,
+        Clock clock
+    ) {
+        validateDependencies(temporalBlockRepository, scheduleBusiness, resourceLookup, clock);
+        if (calendarExceptionRepository == null) {
+            throw new IllegalArgumentException("calendarExceptionRepository must not be null");
+        }
+        this.temporalBlockRepository = temporalBlockRepository;
+        this.calendarExceptionRepository = calendarExceptionRepository;
+        this.scheduleBusiness = scheduleBusiness;
+        this.resourceLookup = resourceLookup;
+        this.clock = clock;
+    }
+
+    private static void validateDependencies(
         TemporalBlockRepository temporalBlockRepository,
         ScheduleBusiness scheduleBusiness,
         Function<UUID, CatalogResource> resourceLookup,
@@ -46,10 +89,74 @@ public class AvailabilityRulesBusiness {
         if (clock == null) {
             throw new IllegalArgumentException("clock must not be null");
         }
-        this.temporalBlockRepository = temporalBlockRepository;
-        this.scheduleBusiness = scheduleBusiness;
-        this.resourceLookup = resourceLookup;
-        this.clock = clock;
+    }
+
+    public CalendarException registerException(
+        UUID resourceId,
+        LocalDate exceptionDate,
+        ExceptionType type,
+        LocalTime startLocalTime,
+        LocalTime endLocalTime,
+        String reason,
+        UUID createdByUserId,
+        OrganizationContext orgContext
+    ) {
+        if (calendarExceptionRepository == null) {
+            throw new IllegalStateException("calendarExceptionRepository is required");
+        }
+        if (resourceId == null || exceptionDate == null || type == null
+            || createdByUserId == null || orgContext == null) {
+            throw new AvailabilityBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "resourceId, exceptionDate, type, createdByUserId and orgContext must not be null"
+            );
+        }
+
+        ZoneId zone = orgContext.zoneId();
+        Instant startAt;
+        Instant endAt;
+        if (type == ExceptionType.CLOSED && startLocalTime == null && endLocalTime == null) {
+            startAt = exceptionDate.atStartOfDay(zone).toInstant();
+            endAt = exceptionDate.plusDays(1).atStartOfDay(zone).toInstant();
+        } else {
+            if (startLocalTime == null || endLocalTime == null || !startLocalTime.isBefore(endLocalTime)) {
+                throw new AvailabilityBusinessException(
+                    ErrorCode.AVAILABILITY_INVALID_INTERVAL,
+                    "Exception interval requires startLocalTime < endLocalTime"
+                );
+            }
+            startAt = exceptionDate.atTime(startLocalTime).atZone(zone).toInstant();
+            endAt = exceptionDate.atTime(endLocalTime).atZone(zone).toInstant();
+        }
+
+        String cleanReason = trimOptional(reason, MAX_REASON_LENGTH);
+        resourceLookup.apply(resourceId);
+
+        StoredCalendarException stored = new StoredCalendarException(
+            UuidV7Utils.generate(),
+            resourceId,
+            exceptionDate,
+            type.name(),
+            startAt,
+            endAt,
+            cleanReason,
+            createdByUserId,
+            clock.instant()
+        );
+        return mapToDomain(calendarExceptionRepository.insert(stored));
+    }
+
+    public List<CalendarException> listExceptions(UUID resourceId) {
+        if (calendarExceptionRepository == null) {
+            throw new IllegalStateException("calendarExceptionRepository is required");
+        }
+        if (resourceId == null) {
+            throw new AvailabilityBusinessException(ErrorCode.VALIDATION_FAILED, "resourceId must not be null");
+        }
+        resourceLookup.apply(resourceId);
+        return calendarExceptionRepository.findByResourceId(resourceId).stream()
+            .map(AvailabilityRulesBusiness::mapToDomain)
+            .toList();
     }
 
     public TemporalBlock registerBlock(
@@ -126,6 +233,24 @@ public class AvailabilityRulesBusiness {
         return mapToDomain(temporalBlockRepository.release(blockId, clock.instant()));
     }
 
+    public List<TimeInterval> evaluateScheduleWithExceptions(
+        UUID resourceId,
+        TimeInterval range,
+        OrganizationContext orgContext
+    ) {
+        if (resourceId == null || range == null || orgContext == null) {
+            throw new AvailabilityBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "resourceId, range and orgContext must not be null"
+            );
+        }
+        CatalogResource resource = resourceLookup.apply(resourceId);
+        if (resource.status() != ResourceStatus.AVAILABLE) {
+            return List.of();
+        }
+        return evaluateLevels4And3(resourceId, range, orgContext);
+    }
+
     public List<TimeInterval> evaluateOpenWindows(
         UUID resourceId,
         TimeInterval range,
@@ -143,20 +268,20 @@ public class AvailabilityRulesBusiness {
             return List.of();
         }
 
-        // Nivel 4 de D-5: ventanas recurrentes semanales IANA fusionadas en medianoche
-        List<TimeInterval> openWindows = scheduleBusiness.evaluateWeeklyWindows(resourceId, range, orgContext);
+        // Niveles 4 y 3 de D-5: horario semanal IANA reemplazado por excepciones CUSTOM_HOURS y CLOSED
+        List<TimeInterval> openWindows = evaluateLevels4And3(resourceId, range, orgContext);
         if (openWindows.isEmpty()) {
             return List.of();
         }
 
-        // Nivel 2 de D-5: sustraccion de bloqueos temporales activos
+        // Nivel 2 de D-5: sustraccion de bloqueos temporales activos (prevalecen sobre Nivel 3 y Nivel 4)
         List<StoredTemporalBlock> blocks = temporalBlockRepository.findActiveOverlapping(
             resourceId,
             range.startAt(),
             range.endAt()
         );
         for (StoredTemporalBlock block : blocks) {
-            openWindows = subtractBlock(openWindows, new TimeInterval(block.startAt(), block.endAt()));
+            openWindows = subtractInterval(openWindows, new TimeInterval(block.startAt(), block.endAt()));
             if (openWindows.isEmpty()) {
                 return List.of();
             }
@@ -178,18 +303,99 @@ public class AvailabilityRulesBusiness {
         ).isEmpty();
     }
 
-    private static List<TimeInterval> subtractBlock(List<TimeInterval> windows, TimeInterval block) {
+    private List<TimeInterval> evaluateLevels4And3(
+        UUID resourceId,
+        TimeInterval range,
+        OrganizationContext orgContext
+    ) {
+        List<TimeInterval> windows = new ArrayList<>(
+            scheduleBusiness.evaluateWeeklyWindows(resourceId, range, orgContext)
+        );
+        if (calendarExceptionRepository == null) {
+            return windows;
+        }
+        List<StoredCalendarException> exceptions = calendarExceptionRepository.findOverlapping(
+            resourceId,
+            range.startAt(),
+            range.endAt()
+        );
+        if (exceptions.isEmpty()) {
+            return windows;
+        }
+
+        ZoneId zone = orgContext.zoneId();
+        Set<LocalDate> customDates = new LinkedHashSet<>();
+        List<StoredCalendarException> customExceptions = new ArrayList<>();
+        List<StoredCalendarException> closedExceptions = new ArrayList<>();
+        for (StoredCalendarException exception : exceptions) {
+            if (ExceptionType.CUSTOM_HOURS.name().equals(exception.exceptionType())) {
+                customDates.add(exception.exceptionDate());
+                customExceptions.add(exception);
+            } else {
+                closedExceptions.add(exception);
+            }
+        }
+
+        if (!customDates.isEmpty()) {
+            for (LocalDate customDate : customDates) {
+                Instant dayStart = customDate.atStartOfDay(zone).toInstant();
+                Instant dayEnd = customDate.plusDays(1).atStartOfDay(zone).toInstant();
+                windows = new ArrayList<>(subtractInterval(windows, new TimeInterval(dayStart, dayEnd)));
+            }
+            for (StoredCalendarException custom : customExceptions) {
+                Instant clampedStart = custom.startAt().isAfter(range.startAt())
+                    ? custom.startAt() : range.startAt();
+                Instant clampedEnd = custom.endAt().isBefore(range.endAt())
+                    ? custom.endAt() : range.endAt();
+                if (clampedStart.isBefore(clampedEnd)) {
+                    windows.add(new TimeInterval(clampedStart, clampedEnd));
+                }
+            }
+            windows = new ArrayList<>(mergeIntervals(windows));
+        }
+
+        for (StoredCalendarException closed : closedExceptions) {
+            windows = new ArrayList<>(
+                subtractInterval(windows, new TimeInterval(closed.startAt(), closed.endAt()))
+            );
+        }
+        return windows;
+    }
+
+    private static List<TimeInterval> mergeIntervals(List<TimeInterval> intervals) {
+        if (intervals.size() <= 1) {
+            return intervals;
+        }
+        List<TimeInterval> sorted = new ArrayList<>(intervals);
+        sorted.sort(Comparator.comparing(TimeInterval::startAt).thenComparing(TimeInterval::endAt));
+        List<TimeInterval> merged = new ArrayList<>();
+        TimeInterval current = sorted.getFirst();
+        for (int i = 1; i < sorted.size(); i++) {
+            TimeInterval next = sorted.get(i);
+            if (!next.startAt().isAfter(current.endAt())) {
+                Instant end = next.endAt().isAfter(current.endAt()) ? next.endAt() : current.endAt();
+                current = new TimeInterval(current.startAt(), end);
+            } else {
+                merged.add(current);
+                current = next;
+            }
+        }
+        merged.add(current);
+        return merged;
+    }
+
+    private static List<TimeInterval> subtractInterval(List<TimeInterval> windows, TimeInterval blocker) {
         List<TimeInterval> remaining = new ArrayList<>();
         for (TimeInterval window : windows) {
-            if (!window.overlaps(block)) {
+            if (!window.overlaps(blocker)) {
                 remaining.add(window);
                 continue;
             }
-            if (window.startAt().isBefore(block.startAt())) {
-                remaining.add(new TimeInterval(window.startAt(), block.startAt()));
+            if (window.startAt().isBefore(blocker.startAt())) {
+                remaining.add(new TimeInterval(window.startAt(), blocker.startAt()));
             }
-            if (block.endAt().isBefore(window.endAt())) {
-                remaining.add(new TimeInterval(block.endAt(), window.endAt()));
+            if (blocker.endAt().isBefore(window.endAt())) {
+                remaining.add(new TimeInterval(blocker.endAt(), window.endAt()));
             }
         }
         return remaining;
@@ -223,6 +429,20 @@ public class AvailabilityRulesBusiness {
             stored.createdByUserId(),
             stored.createdAt(),
             stored.releasedAt()
+        );
+    }
+
+    private static CalendarException mapToDomain(StoredCalendarException stored) {
+        return new CalendarException(
+            stored.id(),
+            stored.resourceId(),
+            stored.exceptionDate(),
+            ExceptionType.valueOf(stored.exceptionType()),
+            stored.startAt(),
+            stored.endAt(),
+            stored.reason(),
+            stored.createdByUserId(),
+            stored.createdAt()
         );
     }
 }

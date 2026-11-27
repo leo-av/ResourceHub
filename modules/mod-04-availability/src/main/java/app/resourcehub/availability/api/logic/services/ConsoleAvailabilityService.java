@@ -2,6 +2,8 @@ package app.resourcehub.availability.api.logic.services;
 
 import app.resourcehub.availability.business.B;
 import app.resourcehub.availability.business.structs.AvailabilityBusinessException;
+import app.resourcehub.availability.business.structs.CalendarException;
+import app.resourcehub.availability.business.structs.CreateCalendarExceptionCommand;
 import app.resourcehub.availability.business.structs.CreateTemporalBlockCommand;
 import app.resourcehub.availability.business.structs.RecurringScheduleSlot;
 import app.resourcehub.availability.business.structs.TemporalBlock;
@@ -11,6 +13,7 @@ import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import app.resourcehub.shared.business.structs.OperationalScope;
+import app.resourcehub.shared.business.structs.OrganizationContext;
 import app.resourcehub.shared.business.structs.SharedDomainException;
 import java.net.URI;
 import java.time.Clock;
@@ -40,6 +43,42 @@ public class ConsoleAvailabilityService {
         requireConsoleManagement(actor);
         List<RecurringScheduleSlot> result = B.schedules().listWeeklySchedules(resourceId);
         return ResponseWrapper.ok("OK", result, effectiveRequestId(requestId), effectiveClock(clock).instant());
+    }
+
+    public ResponseWrapper<CalendarException> createException(
+        ActorContext actor,
+        UUID resourceId,
+        CreateCalendarExceptionCommand command,
+        OrganizationContext orgContext,
+        String requestId,
+        Clock clock
+    ) {
+        requireConsoleManagement(actor);
+        if (command == null) {
+            throw new AvailabilityBusinessException(ErrorCode.VALIDATION_FAILED, "Request body must not be null");
+        }
+        CalendarException created = B.rules().registerException(
+            resourceId,
+            command.exceptionDate(),
+            command.type(),
+            command.startLocalTime(),
+            command.endLocalTime(),
+            command.reason(),
+            actor.userId(),
+            orgContext
+        );
+        return ResponseWrapper.ok("OK", created, effectiveRequestId(requestId), effectiveClock(clock).instant());
+    }
+
+    public ResponseWrapper<List<CalendarException>> listExceptions(
+        ActorContext actor,
+        UUID resourceId,
+        String requestId,
+        Clock clock
+    ) {
+        requireConsoleManagement(actor);
+        List<CalendarException> exceptions = B.rules().listExceptions(resourceId);
+        return ResponseWrapper.ok("OK", exceptions, effectiveRequestId(requestId), effectiveClock(clock).instant());
     }
 
     public ResponseWrapper<TemporalBlock> createBlock(
