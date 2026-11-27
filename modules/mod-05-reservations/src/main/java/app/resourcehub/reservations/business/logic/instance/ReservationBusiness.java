@@ -17,15 +17,23 @@ import app.resourcehub.reservations.repository.structs.StoredReservationLine;
 import app.resourcehub.resources.business.structs.CatalogResource;
 import app.resourcehub.resources.business.structs.ResourceStatus;
 import app.resourcehub.shared.business.structs.ActorContext;
+import app.resourcehub.shared.business.structs.ActorType;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import app.resourcehub.shared.business.structs.OperationalScope;
 import app.resourcehub.shared.business.structs.OrganizationContext;
 import app.resourcehub.shared.business.structs.TimeInterval;
 import app.resourcehub.shared.business.utils.UuidV7Utils;
+import app.resourcehub.traceability.business.logic.instance.AuditLogBusiness;
+import app.resourcehub.traceability.business.logic.instance.ReservationHistoryBusiness;
+import app.resourcehub.traceability.business.structs.AuditOutcome;
+import app.resourcehub.traceability.business.structs.HistoryChangeType;
+import app.resourcehub.traceability.business.structs.RecordAuditCommand;
+import app.resourcehub.traceability.business.structs.RecordHistoryCommand;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -37,12 +45,18 @@ public class ReservationBusiness {
     private static final String PAYMENT_SIN_CARGO = "SIN_CARGO";
     private static final String CANCELLATION_HOLDER = "HOLDER";
     private static final String CANCELLATION_MANAGEMENT = "MANAGEMENT";
+    private static final String TARGET_ENTITY_RESERVATION = "RESERVATION";
+    private static final String OP_RESERVATION_CREATE = "RESERVATION_CREATE";
+    private static final String OP_RESERVATION_MODIFY = "RESERVATION_MODIFY";
+    private static final String OP_RESERVATION_CANCEL = "RESERVATION_CANCEL";
 
     private final ReservationRepository reservationRepository;
     private final Supplier<ScheduleBusiness> scheduleBusinessSupplier;
     private final Supplier<AvailabilityRulesBusiness> rulesBusinessSupplier;
     private final Function<UUID, CatalogResource> resourceLookup;
     private final Clock clock;
+    private final Supplier<ReservationHistoryBusiness> historyBusinessSupplier;
+    private final Supplier<AuditLogBusiness> auditBusinessSupplier;
 
     public ReservationBusiness(
         ReservationRepository reservationRepository,
@@ -50,6 +64,26 @@ public class ReservationBusiness {
         Supplier<AvailabilityRulesBusiness> rulesBusinessSupplier,
         Function<UUID, CatalogResource> resourceLookup,
         Clock clock
+    ) {
+        this(
+            reservationRepository,
+            scheduleBusinessSupplier,
+            rulesBusinessSupplier,
+            resourceLookup,
+            clock,
+            null,
+            null
+        );
+    }
+
+    public ReservationBusiness(
+        ReservationRepository reservationRepository,
+        Supplier<ScheduleBusiness> scheduleBusinessSupplier,
+        Supplier<AvailabilityRulesBusiness> rulesBusinessSupplier,
+        Function<UUID, CatalogResource> resourceLookup,
+        Clock clock,
+        Supplier<ReservationHistoryBusiness> historyBusinessSupplier,
+        Supplier<AuditLogBusiness> auditBusinessSupplier
     ) {
         if (reservationRepository == null) {
             throw new IllegalArgumentException("reservationRepository must not be null");
@@ -71,9 +105,55 @@ public class ReservationBusiness {
         this.rulesBusinessSupplier = rulesBusinessSupplier;
         this.resourceLookup = resourceLookup;
         this.clock = clock;
+        this.historyBusinessSupplier = historyBusinessSupplier != null ? historyBusinessSupplier : () -> null;
+        this.auditBusinessSupplier = auditBusinessSupplier != null ? auditBusinessSupplier : () -> null;
     }
 
     public Reservation createReservation(
+        ActorContext actor,
+        CreateReservationCommand command,
+        OrganizationContext orgContext
+    ) {
+        return createReservation(actor, command, orgContext, null);
+    }
+
+    public Reservation createReservation(
+        ActorContext actor,
+        CreateReservationCommand command,
+        OrganizationContext orgContext,
+        String correlationId
+    ) {
+        String effectiveCorrelationId = resolveCorrelationId(correlationId);
+        UUID holderId = actor != null ? actor.userId() : null;
+        try {
+            Reservation created = executeCreateReservation(actor, command, orgContext);
+            String afterJson = buildNonPiiSnapshotJson(created);
+            appendHistory(
+                HistoryChangeType.CREATED,
+                null,
+                created.status().name(),
+                actor,
+                created.holderId(),
+                null,
+                afterJson,
+                effectiveCorrelationId
+            );
+            recordAcceptedAudit(
+                effectiveCorrelationId,
+                OP_RESERVATION_CREATE,
+                created.id(),
+                actor,
+                created.holderId(),
+                afterJson
+            );
+            return created;
+        } catch (ReservationsBusinessException ex) {
+            recordRejectedAudit(effectiveCorrelationId, OP_RESERVATION_CREATE, null, actor, holderId, ex);
+            throw ex;
+        }
+    }
+
+    private Reservation executeCreateReservation(
         ActorContext actor,
         CreateReservationCommand command,
         OrganizationContext orgContext
@@ -183,6 +263,56 @@ public class ReservationBusiness {
         ModifyReservationCommand command,
         OrganizationContext orgContext
     ) {
+        return modifyReservation(actor, reservationId, command, orgContext, null);
+    }
+
+    public Reservation modifyReservation(
+        ActorContext actor,
+        UUID reservationId,
+        ModifyReservationCommand command,
+        OrganizationContext orgContext,
+        String correlationId
+    ) {
+        String effectiveCorrelationId = resolveCorrelationId(correlationId);
+        UUID holderId = actor != null ? actor.userId() : null;
+        AtomicReference<Reservation> beforeRef = new AtomicReference<>();
+        try {
+            Reservation modified = executeModifyReservation(actor, reservationId, command, orgContext, beforeRef);
+            Reservation before = beforeRef.get();
+            String beforeJson = buildNonPiiSnapshotJson(before);
+            String afterJson = buildNonPiiSnapshotJson(modified);
+            appendHistory(
+                HistoryChangeType.MODIFIED,
+                before.status().name(),
+                modified.status().name(),
+                actor,
+                modified.holderId(),
+                beforeJson,
+                afterJson,
+                effectiveCorrelationId
+            );
+            recordAcceptedAudit(
+                effectiveCorrelationId,
+                OP_RESERVATION_MODIFY,
+                modified.id(),
+                actor,
+                modified.holderId(),
+                afterJson
+            );
+            return modified;
+        } catch (ReservationsBusinessException ex) {
+            recordRejectedAudit(effectiveCorrelationId, OP_RESERVATION_MODIFY, reservationId, actor, holderId, ex);
+            throw ex;
+        }
+    }
+
+    private Reservation executeModifyReservation(
+        ActorContext actor,
+        UUID reservationId,
+        ModifyReservationCommand command,
+        OrganizationContext orgContext,
+        AtomicReference<Reservation> beforeRef
+    ) {
         requireClientScope(actor);
         if (reservationId == null || command == null || command.resourceId() == null || orgContext == null) {
             throw new ReservationsBusinessException(
@@ -203,6 +333,7 @@ public class ReservationBusiness {
         if (!existing.reservation().holderId().equals(actor.userId())) {
             throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
         }
+        beforeRef.set(mapToDomain(existing));
         ReservationStatus currentStatus = ReservationStatus.valueOf(existing.reservation().status());
         if (!isModifiableStatus(currentStatus)) {
             throw new ReservationsBusinessException(
@@ -270,6 +401,56 @@ public class ReservationBusiness {
     }
 
     public Reservation cancelReservation(ActorContext actor, UUID reservationId) {
+        return cancelReservation(actor, reservationId, null);
+    }
+
+    public Reservation cancelReservation(ActorContext actor, UUID reservationId, String correlationId) {
+        String effectiveCorrelationId = resolveCorrelationId(correlationId);
+        AtomicReference<UUID> holderRef = new AtomicReference<>(actor != null ? actor.userId() : null);
+        AtomicReference<Reservation> beforeRef = new AtomicReference<>();
+        try {
+            Reservation cancelled = executeCancelReservation(actor, reservationId, holderRef, beforeRef);
+            Reservation before = beforeRef.get();
+            String beforeJson = buildNonPiiSnapshotJson(before);
+            String afterJson = buildNonPiiSnapshotJson(cancelled);
+            appendHistory(
+                HistoryChangeType.CANCELLED,
+                before.status().name(),
+                cancelled.status().name(),
+                actor,
+                cancelled.holderId(),
+                beforeJson,
+                afterJson,
+                effectiveCorrelationId
+            );
+            recordAcceptedAudit(
+                effectiveCorrelationId,
+                OP_RESERVATION_CANCEL,
+                cancelled.id(),
+                actor,
+                cancelled.holderId(),
+                afterJson
+            );
+            return cancelled;
+        } catch (ReservationsBusinessException ex) {
+            recordRejectedAudit(
+                effectiveCorrelationId,
+                OP_RESERVATION_CANCEL,
+                reservationId,
+                actor,
+                holderRef.get(),
+                ex
+            );
+            throw ex;
+        }
+    }
+
+    private Reservation executeCancelReservation(
+        ActorContext actor,
+        UUID reservationId,
+        AtomicReference<UUID> holderRef,
+        AtomicReference<Reservation> beforeRef
+    ) {
         if (actor == null) {
             throw new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
         }
@@ -284,6 +465,8 @@ public class ReservationBusiness {
             && !existing.reservation().holderId().equals(actor.userId())) {
             throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
         }
+        holderRef.set(existing.reservation().holderId());
+        beforeRef.set(mapToDomain(existing));
         ReservationStatus currentStatus = ReservationStatus.valueOf(existing.reservation().status());
         if (!isModifiableStatus(currentStatus)) {
             throw new ReservationsBusinessException(
@@ -449,5 +632,157 @@ public class ReservationBusiness {
             line.lineAmountMinor(),
             line.currencyCode()
         );
+    }
+
+    private void appendHistory(
+        HistoryChangeType changeType,
+        String previousStatus,
+        String newStatus,
+        ActorContext actor,
+        UUID holderId,
+        String snapshotBeforeJson,
+        String snapshotAfterJson,
+        String correlationId
+    ) {
+        ReservationHistoryBusiness historyBusiness = historyBusinessSupplier.get();
+        if (historyBusiness == null) {
+            return;
+        }
+        historyBusiness.appendHistoryInCurrentTx(new RecordHistoryCommand(
+            extractReservationId(snapshotAfterJson),
+            changeType,
+            previousStatus,
+            newStatus,
+            actor.actorType(),
+            actor.userId(),
+            holderId,
+            actor.operationalScope(),
+            snapshotBeforeJson,
+            snapshotAfterJson,
+            correlationId
+        ));
+    }
+
+    private void recordAcceptedAudit(
+        String correlationId,
+        String operationCode,
+        UUID reservationId,
+        ActorContext actor,
+        UUID holderId,
+        String detailsJson
+    ) {
+        AuditLogBusiness auditBusiness = auditBusinessSupplier.get();
+        if (auditBusiness == null) {
+            return;
+        }
+        auditBusiness.recordAuditInAutonomousTx(new RecordAuditCommand(
+            correlationId,
+            operationCode,
+            TARGET_ENTITY_RESERVATION,
+            reservationId,
+            actor.actorType(),
+            actor.userId(),
+            holderId,
+            actor.actorRole(),
+            actor.operationalScope(),
+            AuditOutcome.ACCEPTED,
+            null,
+            null,
+            detailsJson
+        ));
+    }
+
+    private void recordRejectedAudit(
+        String correlationId,
+        String operationCode,
+        UUID reservationId,
+        ActorContext actor,
+        UUID holderId,
+        ReservationsBusinessException ex
+    ) {
+        if (actor == null || actor.actorType() == ActorType.PLATFORM_ADMIN) {
+            return;
+        }
+        AuditLogBusiness auditBusiness = auditBusinessSupplier.get();
+        if (auditBusiness == null) {
+            return;
+        }
+        String detailsJson = "{\"operation\":\"" + escapeJson(operationCode)
+            + "\",\"errorCode\":\"" + escapeJson(ex.getErrorCode().name())
+            + "\",\"message\":\"" + escapeJson(ex.getMessage()) + "\"}";
+        auditBusiness.recordAuditInAutonomousTx(new RecordAuditCommand(
+            correlationId,
+            operationCode,
+            TARGET_ENTITY_RESERVATION,
+            reservationId,
+            actor.actorType(),
+            actor.userId(),
+            holderId,
+            actor.actorRole(),
+            actor.operationalScope(),
+            AuditOutcome.REJECTED,
+            ex.getErrorCode().name(),
+            ex.getErrorCode().name(),
+            detailsJson
+        ));
+    }
+
+    private static UUID extractReservationId(String snapshotJson) {
+        int prefixIndex = snapshotJson.indexOf("\"reservationId\":\"");
+        int start = prefixIndex + 17;
+        int end = snapshotJson.indexOf('"', start);
+        return UUID.fromString(snapshotJson.substring(start, end));
+    }
+
+    private static String buildNonPiiSnapshotJson(Reservation reservation) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append("{\"reservationId\":\"").append(reservation.id()).append('"')
+            .append(",\"status\":\"").append(reservation.status().name()).append('"')
+            .append(",\"version\":").append(reservation.version())
+            .append(",\"totalAmountMinor\":").append(reservation.totalAmountMinor())
+            .append(",\"currencyCode\":\"").append(escapeJson(reservation.currencyCode())).append('"')
+            .append(",\"lines\":[");
+        List<ReservationLineItem> lines = reservation.lines();
+        for (int i = 0; i < lines.size(); i++) {
+            ReservationLineItem line = lines.get(i);
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append("{\"lineNumber\":").append(line.lineNumber())
+                .append(",\"resourceId\":\"").append(line.resourceId()).append('"')
+                .append(",\"startAt\":\"").append(line.startAt()).append('"')
+                .append(",\"endAt\":\"").append(line.endAt()).append('"')
+                .append(",\"status\":\"").append(escapeJson(line.status())).append("\"}");
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private static String resolveCorrelationId(String correlationId) {
+        return (correlationId == null || correlationId.isBlank())
+            ? UuidV7Utils.generate().toString()
+            : correlationId.trim();
+    }
+
+    private static String escapeJson(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '"' || ch == '\\') {
+                sb.append('\\').append(ch);
+            } else if (ch == '\n') {
+                sb.append("\\n");
+            } else if (ch == '\r') {
+                sb.append("\\r");
+            } else if (ch == '\t') {
+                sb.append("\\t");
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
     }
 }

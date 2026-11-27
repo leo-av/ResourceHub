@@ -31,6 +31,15 @@ import app.resourcehub.shared.business.structs.OperationalScope;
 import app.resourcehub.shared.business.structs.OrganizationContext;
 import app.resourcehub.shared.business.structs.SharedDomainException;
 import app.resourcehub.shared.business.structs.TimeInterval;
+import app.resourcehub.traceability.business.logic.instance.AuditLogBusiness;
+import app.resourcehub.traceability.business.logic.instance.ReservationHistoryBusiness;
+import app.resourcehub.traceability.business.structs.AuditOutcome;
+import app.resourcehub.traceability.business.structs.HistoryChangeType;
+import app.resourcehub.traceability.repository.logic.local.AuditLogRepository;
+import app.resourcehub.traceability.repository.logic.local.ReservationHistoryRepository;
+import app.resourcehub.traceability.repository.structs.AuditLogQueryFilter;
+import app.resourcehub.traceability.repository.structs.StoredAuditLog;
+import app.resourcehub.traceability.repository.structs.StoredReservationHistory;
 import java.lang.reflect.Method;
 import java.time.Clock;
 import java.time.Instant;
@@ -683,6 +692,90 @@ class ReservationsBusinessTest {
         assertThat(cancelledByConsole.lines().getFirst().status()).isEqualTo("RELEASED");
     }
 
+    @Test
+    @DisplayName("TT-021 [PRU-01 / AC-008..009]: Triple Aserción histórico REQUIRED y auditoría REQUIRES_NEW")
+    void shouldEmitTripleAssertionHistoryAndAutonomousAuditLogs() {
+        InMemoryHistoryRepository historyRepo = new InMemoryHistoryRepository();
+        InMemoryAuditRepository auditRepo = new InMemoryAuditRepository();
+        ReservationHistoryBusiness historyBusiness = new ReservationHistoryBusiness(historyRepo, FIXED_CLOCK);
+        AuditLogBusiness auditBusiness = new AuditLogBusiness(auditRepo, FIXED_CLOCK);
+        ReservationBusiness tracedBusiness = new ReservationBusiness(
+            reservationRepository,
+            () -> scheduleBusiness,
+            () -> rulesBusiness,
+            catalog::get,
+            FIXED_CLOCK,
+            () -> historyBusiness,
+            () -> auditBusiness
+        );
+
+        Instant t09 = Instant.parse("2026-11-30T09:00:00Z");
+        Instant t10 = Instant.parse("2026-11-30T10:00:00Z");
+        Instant t11 = Instant.parse("2026-11-30T11:00:00Z");
+        Instant t12 = Instant.parse("2026-11-30T12:00:00Z");
+
+        Reservation created = tracedBusiness.createReservation(
+            CLIENT_USER_1,
+            new CreateReservationCommand(RESOURCE_ID, t09, t10, 1, null),
+            MADRID_ORG,
+            "corr-create"
+        );
+        Reservation modified = tracedBusiness.modifyReservation(
+            CLIENT_USER_1,
+            created.id(),
+            new ModifyReservationCommand(RESOURCE_ID, t11, t12, 1),
+            MADRID_ORG,
+            "corr-modify"
+        );
+        Reservation cancelled = tracedBusiness.cancelReservation(CLIENT_USER_1, modified.id(), "corr-cancel");
+        assertThat(cancelled.status()).isEqualTo(ReservationStatus.CANCELLED);
+
+        List<StoredReservationHistory> history = historyRepo.findByReservationId(created.id());
+        assertThat(history).hasSize(3);
+        assertThat(history.get(0).changeType()).isEqualTo(HistoryChangeType.CREATED.name());
+        assertThat(history.get(0).correlationId()).isEqualTo("corr-create");
+        assertThat(history.get(1).changeType()).isEqualTo(HistoryChangeType.MODIFIED.name());
+        assertThat(history.get(1).snapshotBeforeJson()).contains("\"version\":1");
+        assertThat(history.get(1).snapshotAfterJson()).contains("\"version\":2");
+        assertThat(history.get(2).changeType()).isEqualTo(HistoryChangeType.CANCELLED.name());
+
+        // Fallos de negocio registran REJECTED en auditoría y 0 entradas extra en histórico
+        assertThatThrownBy(() -> tracedBusiness.modifyReservation(
+            CLIENT_USER_1,
+            created.id(),
+            new ModifyReservationCommand(RESOURCE_ID, t09, t10, 1),
+            MADRID_ORG,
+            "corr-reject-mod"
+        )).isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> tracedBusiness.cancelReservation(CLIENT_USER_1, created.id(), "corr-reject-can"))
+            .isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> tracedBusiness.createReservation(
+            CONSOLE_MANAGER,
+            new CreateReservationCommand(RESOURCE_ID, t09, t10, 1, null),
+            MADRID_ORG,
+            "corr-reject-scope"
+        )).isInstanceOf(ReservationsBusinessException.class);
+        ActorContext platformAdmin = new ActorContext(
+            CONSOLE_MANAGER.userId(), null, ActorType.PLATFORM_ADMIN, "PA", OperationalScope.PLATFORM, null, Set.of()
+        );
+        assertThatThrownBy(() -> tracedBusiness.createReservation(
+            platformAdmin,
+            new CreateReservationCommand(RESOURCE_ID, t09, t10, 1, null),
+            MADRID_ORG,
+            " "
+        )).isInstanceOf(ReservationsBusinessException.class);
+
+        assertThat(historyRepo.findByReservationId(created.id())).hasSize(3);
+        List<StoredAuditLog> auditEntries = auditRepo.findByFilter(
+            new AuditLogQueryFilter(null, null, null, null, null, null), 20, 0
+        );
+        assertThat(auditEntries).hasSize(6);
+        assertThat(auditEntries.stream().filter(a -> AuditOutcome.ACCEPTED.name().equals(a.outcome())).count())
+            .isEqualTo(3L);
+        assertThat(auditEntries.stream().filter(a -> AuditOutcome.REJECTED.name().equals(a.outcome())).count())
+            .isEqualTo(3L);
+    }
+
     private static CatalogResource sampleResource(UUID id, ResourceStatus status) {
         return new CatalogResource(
             id,
@@ -909,6 +1002,63 @@ class ReservationsBusinessTest {
                 .toList();
             store.put(reservationId, new StoredReservationAggregate(updatedHeader, updatedLines));
             return Optional.of(updatedHeader);
+        }
+    }
+
+    private static javax.sql.DataSource dummyDataSource() {
+        return (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
+            ReservationsBusinessTest.class.getClassLoader(),
+            new Class<?>[]{javax.sql.DataSource.class},
+            (proxy, method, args) -> null
+        );
+    }
+
+    private static final class InMemoryHistoryRepository extends ReservationHistoryRepository {
+
+        private final List<StoredReservationHistory> entries = new ArrayList<>();
+
+        private InMemoryHistoryRepository() {
+            super(dummyDataSource());
+        }
+
+        @Override
+        public StoredReservationHistory insert(StoredReservationHistory entry) {
+            entries.add(entry);
+            return entry;
+        }
+
+        @Override
+        public List<StoredReservationHistory> findByReservationId(UUID reservationId) {
+            return entries.stream()
+                .filter(item -> item.reservationId().equals(reservationId))
+                .sorted(Comparator.comparing(StoredReservationHistory::occurredAt))
+                .toList();
+        }
+    }
+
+    private static final class InMemoryAuditRepository extends AuditLogRepository {
+
+        private final List<StoredAuditLog> entries = new ArrayList<>();
+
+        private InMemoryAuditRepository() {
+            super(dummyDataSource());
+        }
+
+        @Override
+        public StoredAuditLog insertAutonomous(StoredAuditLog entry) {
+            entries.add(entry);
+            return entry;
+        }
+
+        @Override
+        public List<StoredAuditLog> findByFilter(AuditLogQueryFilter filter, int limit, int offset) {
+            int toIndex = Math.min(offset + limit, entries.size());
+            return List.copyOf(entries.subList(Math.min(offset, entries.size()), toIndex));
+        }
+
+        @Override
+        public long countByFilter(AuditLogQueryFilter filter) {
+            return entries.size();
         }
     }
 }

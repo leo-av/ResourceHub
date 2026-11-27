@@ -23,8 +23,9 @@ public class ConsoleReservationService {
         Clock clock
     ) {
         requireConsoleManagement(actor);
-        Reservation cancelled = B.reservations().cancelReservation(actor, reservationId);
-        return ResponseWrapper.ok("OK", cancelled, effectiveRequestId(requestId), effectiveClock(clock).instant());
+        String correlationId = effectiveRequestId(requestId);
+        Reservation cancelled = B.reservations().cancelReservation(actor, reservationId, correlationId);
+        return ResponseWrapper.ok("OK", cancelled, correlationId, effectiveClock(clock).instant());
     }
 
     public InternalProblem toInternalProblem(SharedDomainException ex, String instancePath, String requestId) {

@@ -44,8 +44,9 @@ public class AppReservationService {
         String requestId,
         Clock clock
     ) {
-        Reservation created = B.reservations().createReservation(actor, command, orgContext);
-        return ResponseWrapper.ok("OK", created, effectiveRequestId(requestId), effectiveClock(clock).instant());
+        String correlationId = effectiveRequestId(requestId);
+        Reservation created = B.reservations().createReservation(actor, command, orgContext, correlationId);
+        return ResponseWrapper.ok("OK", created, correlationId, effectiveClock(clock).instant());
     }
 
     public ResponseWrapper<Reservation> modifyReservation(
@@ -56,8 +57,11 @@ public class AppReservationService {
         String requestId,
         Clock clock
     ) {
-        Reservation modified = B.reservations().modifyReservation(actor, reservationId, command, orgContext);
-        return ResponseWrapper.ok("OK", modified, effectiveRequestId(requestId), effectiveClock(clock).instant());
+        String correlationId = effectiveRequestId(requestId);
+        Reservation modified = B.reservations().modifyReservation(
+            actor, reservationId, command, orgContext, correlationId
+        );
+        return ResponseWrapper.ok("OK", modified, correlationId, effectiveClock(clock).instant());
     }
 
     public ResponseWrapper<Reservation> cancelReservation(
@@ -66,8 +70,9 @@ public class AppReservationService {
         String requestId,
         Clock clock
     ) {
-        Reservation cancelled = B.reservations().cancelReservation(actor, reservationId);
-        return ResponseWrapper.ok("OK", cancelled, effectiveRequestId(requestId), effectiveClock(clock).instant());
+        String correlationId = effectiveRequestId(requestId);
+        Reservation cancelled = B.reservations().cancelReservation(actor, reservationId, correlationId);
+        return ResponseWrapper.ok("OK", cancelled, correlationId, effectiveClock(clock).instant());
     }
 
     public ResponseWrapper<PageResponse<Reservation>> listOwnReservations(
