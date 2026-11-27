@@ -8,6 +8,7 @@ import java.time.Clock;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import javax.sql.DataSource;
 
 public final class XF {
@@ -24,7 +25,7 @@ public final class XF {
 
     public static void init(DataSource dataSource, Clock clock) {
         init(dataSource, clock, orgId -> Boolean.FALSE, ev -> {
-        });
+        }, personId -> Boolean.TRUE);
     }
 
     public static void init(
@@ -33,7 +34,7 @@ public final class XF {
         Function<UUID, Boolean> allowStandardUserSpaceBookingResolver
     ) {
         init(dataSource, clock, allowStandardUserSpaceBookingResolver, ev -> {
-        });
+        }, personId -> Boolean.TRUE);
     }
 
     public static void init(
@@ -42,8 +43,24 @@ public final class XF {
         Function<UUID, Boolean> allowStandardUserSpaceBookingResolver,
         Consumer<UserPersonLinkDisabledEvent> personLinkDisabledListener
     ) {
+        init(
+            dataSource,
+            clock,
+            allowStandardUserSpaceBookingResolver,
+            personLinkDisabledListener,
+            personId -> Boolean.TRUE
+        );
+    }
+
+    public static void init(
+        DataSource dataSource,
+        Clock clock,
+        Function<UUID, Boolean> allowStandardUserSpaceBookingResolver,
+        Consumer<UserPersonLinkDisabledEvent> personLinkDisabledListener,
+        Predicate<UUID> personResourceActiveChecker
+    ) {
         R.init(dataSource);
-        B.init(clock, allowStandardUserSpaceBookingResolver, personLinkDisabledListener);
+        B.init(clock, allowStandardUserSpaceBookingResolver, personLinkDisabledListener, personResourceActiveChecker);
         A.init();
     }
 

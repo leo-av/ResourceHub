@@ -284,9 +284,9 @@ class AuthBusinessTest {
             .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
             .isEqualTo(ErrorCode.VALIDATION_FAILED);
 
-        // 2. Canal no soportado en login/refresh/logout/me
+        // 2. Canal no soportado en login/refresh/logout/me (EXTERNAL_CLIENT no usa login local de usuario)
         assertThatThrownBy(() -> authBusiness.authenticateLocal(
-            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, "a@b.test", "12345678".toCharArray()
+            ORG_ID, OperationalScope.EXTERNAL_CLIENT, "a@b.test", "12345678".toCharArray()
         )).extracting(ex -> ((AccessBusinessException) ex).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
 
         // 3. Validaciones de entrada en authenticateLocal
@@ -477,6 +477,129 @@ class AuthBusinessTest {
         assertThatThrownBy(() -> vaultAuth.authenticateLocal(
             ORG_ID, OperationalScope.AMB_01_CLIENT, "nopass@example.com", "AnyPass2026!".toCharArray()
         )).isInstanceOf(AccessBusinessException.class);
+    }
+
+    @Test
+    @DisplayName("TT-025 PRU-SEG-05: Canal AMB_02_PROFESSIONAL exige personal + PERSON activo en login/refresh")
+    void shouldSupportWorkspaceChannelAndEnforcePrSeg05Rules() {
+        InMemoryPersonalDataRepository vaultRepo = new InMemoryPersonalDataRepository();
+        UUID activePersonId = UUID.fromString("01936a00-0010-7000-8000-000000000801");
+        UUID disabledPersonId = UUID.fromString("01936a00-0010-7000-8000-000000000802");
+        final boolean[] personActiveFlag = {true};
+
+        AuthBusiness workspaceAuth = new AuthBusiness(
+            userRepository,
+            credentialRepository,
+            refreshTokenRepository,
+            vaultRepo,
+            mutableClock,
+            keyPair,
+            personId -> activePersonId.equals(personId) && personActiveFlag[0]
+        );
+
+        // 1. US y EM sin recurso PERSON -> 403 SCOPE_VIOLATION (PRU-SEG-05)
+        IdentityAccount standardUser = userBusiness.createIdentityAccount(UserRole.US, null);
+        workspaceAuth.registerLocalCredential(
+            ORG_ID, standardUser.id(), "us.ws@demo.test", "ClientPass2026!".toCharArray()
+        );
+        assertThatThrownBy(() -> workspaceAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, "us.ws@demo.test", "ClientPass2026!".toCharArray()
+        ))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        IdentityAccount unlinkedStaff = userBusiness.createIdentityAccount(UserRole.EM, null);
+        workspaceAuth.registerLocalCredential(
+            ORG_ID, unlinkedStaff.id(), "unlinked.em@demo.test", "StaffPass2026!".toCharArray()
+        );
+        assertThatThrownBy(() -> workspaceAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, "unlinked.em@demo.test", "StaffPass2026!".toCharArray()
+        ))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // 2. EM con PERSON DISABLED -> 403 SCOPE_VIOLATION (RN-ACC-003)
+        IdentityAccount disabledPersonStaff = userBusiness.createIdentityAccount(UserRole.EM, disabledPersonId);
+        workspaceAuth.registerLocalCredential(
+            ORG_ID, disabledPersonStaff.id(), "disabled.person@demo.test", "StaffPass2026!".toCharArray()
+        );
+        assertThatThrownBy(() -> workspaceAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, "disabled.person@demo.test", "StaffPass2026!".toCharArray()
+        ))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // 3. EM activo con PERSON activo -> emite JWT AMB_02_PROFESSIONAL con lpr y sin PII
+        IdentityAccount activeStaff = userBusiness.createIdentityAccount(UserRole.EM, activePersonId);
+        workspaceAuth.registerLocalCredential(
+            ORG_ID, activeStaff.id(), "active.pro@demo.test", "StaffPass2026!".toCharArray()
+        );
+        AuthTokenBundle bundle = workspaceAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, "active.pro@demo.test", "StaffPass2026!".toCharArray()
+        );
+        assertThat(bundle.operationalScope()).isEqualTo(OperationalScope.AMB_02_PROFESSIONAL);
+        ActorContext actor = workspaceAuth.validateToken(bundle.accessToken());
+        assertThat(actor.linkedPersonResourceId()).isEqualTo(activePersonId);
+        assertThat(actor.operationalScope()).isEqualTo(OperationalScope.AMB_02_PROFESSIONAL);
+
+        UserProfile wsProfile = workspaceAuth.getCurrentProfile(OperationalScope.AMB_02_PROFESSIONAL, bundle.accessToken());
+        assertThat(wsProfile.linkedPersonResourceId()).isEqualTo(activePersonId);
+        assertThatThrownBy(() -> workspaceAuth.getCurrentProfile(OperationalScope.AMB_01_CLIENT, bundle.accessToken()))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThatThrownBy(() -> workspaceAuth.getCurrentProfile(OperationalScope.AMB_03_MANAGEMENT, bundle.accessToken()))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // 4. Refresh exitoso y luego bloqueo cuando el recurso PERSON pasa a DISABLED
+        AuthTokenBundle rotated = workspaceAuth.refresh(
+            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, bundle.refreshToken()
+        );
+        assertThat(rotated.refreshToken()).isNotEqualTo(bundle.refreshToken());
+
+        personActiveFlag[0] = false;
+        assertThatThrownBy(() -> workspaceAuth.refresh(
+            ORG_ID, OperationalScope.AMB_02_PROFESSIONAL, rotated.refreshToken()
+        ))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // 5. Logout en AMB_02_PROFESSIONAL funciona con accessToken valido
+        workspaceAuth.logout(OperationalScope.AMB_02_PROFESSIONAL, bundle.accessToken(), null);
+
+        // 6. WorkspaceAuthService toInternalProblem & validacion body null
+        app.resourcehub.access.api.logic.services.WorkspaceAuthService wsService =
+            new app.resourcehub.access.api.logic.services.WorkspaceAuthService();
+        assertThatThrownBy(() -> wsService.login(null, null, null))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> wsService.refresh(null, "r1", mutableClock))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> wsService.logout(null, "r2", mutableClock))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThat(wsService.toInternalProblem(
+            new AccessBusinessException(ErrorCode.VALIDATION_FAILED, "bad"), null, null
+        ).status()).isEqualTo(400);
+        assertThat(wsService.toInternalProblem(
+            new AccessBusinessException(ErrorCode.UNAUTHENTICATED, "unauth"), "/api/v1/workspace/auth/me", "r-1"
+        ).status()).isEqualTo(401);
+        assertThat(wsService.toInternalProblem(
+            new AccessBusinessException(ErrorCode.SCOPE_VIOLATION, "forbidden"), null, "r-2"
+        ).status()).isEqualTo(403);
+        assertThat(wsService.toInternalProblem(
+            new AccessBusinessException(ErrorCode.NOT_FOUND, "missing"), null, "r-3"
+        ).status()).isEqualTo(404);
+        assertThat(wsService.toInternalProblem(
+            new AccessBusinessException(ErrorCode.ALREADY_EXISTS, "conflict"), null, "r-4"
+        ).status()).isEqualTo(409);
+        assertThat(wsService.toInternalProblem(
+            new AccessBusinessException(ErrorCode.INTERNAL_ERROR, "err"), null, "r-5"
+        ).status()).isEqualTo(500);
     }
 
     private static final class MutableClock extends Clock {

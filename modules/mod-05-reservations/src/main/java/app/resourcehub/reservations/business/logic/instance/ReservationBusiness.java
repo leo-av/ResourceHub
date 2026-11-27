@@ -526,6 +526,61 @@ public class ReservationBusiness {
         return mapToDomain(aggregate);
     }
 
+    public app.resourcehub.reservations.business.structs.ProfessionalAgenda getOwnProfessionalAgenda(
+        ActorContext actor,
+        Instant from,
+        Instant to
+    ) {
+        if (actor == null) {
+            throw new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
+        }
+        if (actor.operationalScope() != OperationalScope.AMB_02_PROFESSIONAL
+            || "US".equals(actor.actorRole())
+            || actor.linkedPersonResourceId() == null) {
+            throw new ReservationsBusinessException(
+                ErrorCode.SCOPE_VIOLATION,
+                "Workspace agenda requires AMB_02_PROFESSIONAL with linked PERSON resource"
+            );
+        }
+        if ((from == null) != (to == null) || (from != null && !from.isBefore(to))) {
+            throw new ReservationsBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "Both from and to must be null or satisfy from < to"
+            );
+        }
+        CatalogResource linkedResource = resourceLookup.apply(actor.linkedPersonResourceId());
+        if (linkedResource.status() != ResourceStatus.AVAILABLE) {
+            throw new ReservationsBusinessException(
+                ErrorCode.SCOPE_VIOLATION,
+                "Linked PERSON resource is not AVAILABLE"
+            );
+        }
+        List<app.resourcehub.reservations.business.structs.AgendaSessionItem> items = reservationRepository
+            .findActiveAgendaLinesByResource(linkedResource.id(), from, to)
+            .stream()
+            .map(entry -> new app.resourcehub.reservations.business.structs.AgendaSessionItem(
+                entry.reservation().id(),
+                entry.line().id(),
+                entry.line().lineNumber(),
+                ReservationStatus.valueOf(entry.reservation().status()),
+                entry.reservation().attendanceStatus(),
+                entry.reservation().holderId(),
+                entry.reservation().requesterId(),
+                entry.line().startAt(),
+                entry.line().endAt(),
+                entry.line().requestedUnits()
+            ))
+            .toList();
+        return new app.resourcehub.reservations.business.structs.ProfessionalAgenda(
+            linkedResource.id(),
+            linkedResource.code(),
+            linkedResource.name(),
+            from,
+            to,
+            items
+        );
+    }
+
     private void validateSlotBookable(CatalogResource resource, TimeInterval slot, OrganizationContext orgContext) {
         // Nivel 1 D-5: recurso habilitado
         if (resource.status() != ResourceStatus.AVAILABLE) {
