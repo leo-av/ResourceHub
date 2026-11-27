@@ -164,6 +164,20 @@ public class AvailabilityRulesBusiness {
         return openWindows;
     }
 
+    public boolean hasActiveBlockOverlapping(UUID resourceId, TimeInterval range) {
+        if (resourceId == null || range == null) {
+            throw new AvailabilityBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "resourceId and range must not be null"
+            );
+        }
+        return !temporalBlockRepository.findActiveOverlapping(
+            resourceId,
+            range.startAt(),
+            range.endAt()
+        ).isEmpty();
+    }
+
     private static List<TimeInterval> subtractBlock(List<TimeInterval> windows, TimeInterval block) {
         List<TimeInterval> remaining = new ArrayList<>();
         for (TimeInterval window : windows) {
