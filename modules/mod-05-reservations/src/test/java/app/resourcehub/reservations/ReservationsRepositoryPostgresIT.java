@@ -238,6 +238,45 @@ class ReservationsRepositoryPostgresIT {
             Instant.parse("2026-12-01T11:00:00Z")
         )).isEmpty();
 
+        // 5. TT-014 (V7 PRU-03): excl_res_line_active_overlap aborta solape directo con SQLState 23P01
+        UUID resGistA = UUID.fromString("01936b00-0300-7000-8000-000000000001");
+        UUID resGistB = UUID.fromString("01936b00-0300-7000-8000-000000000002");
+        R.reservations().insertAggregate(
+            sampleReservation(resGistA, requesterId, holderId, "CONFIRMED", null),
+            List.of(sampleLine(
+                UUID.fromString("01936b00-0300-7000-8000-000000000011"),
+                resGistA, (short) 1, resourceA,
+                Instant.parse("2026-12-02T10:00:00Z"),
+                Instant.parse("2026-12-02T11:00:00Z"),
+                1
+            ))
+        );
+        assertThatThrownBy(() -> R.reservations().insertAggregate(
+            sampleReservation(resGistB, requesterId, holderId, "CONFIRMED", null),
+            List.of(sampleLine(
+                UUID.fromString("01936b00-0300-7000-8000-000000000012"),
+                resGistB, (short) 1, resourceA,
+                Instant.parse("2026-12-02T10:30:00Z"),
+                Instant.parse("2026-12-02T11:30:00Z"),
+                1
+            ))
+        ))
+            .isInstanceOf(ReservationsRepositoryException.class)
+            .extracting(ex -> ((ReservationsRepositoryException) ex).getSqlState())
+            .isEqualTo("23P01");
+
+        // Adyacente [11:00, 12:00) si permitida fisicamente por GiST [)
+        R.reservations().insertAggregate(
+            sampleReservation(resGistB, requesterId, holderId, "CONFIRMED", null),
+            List.of(sampleLine(
+                UUID.fromString("01936b00-0300-7000-8000-000000000013"),
+                resGistB, (short) 1, resourceA,
+                Instant.parse("2026-12-02T11:00:00Z"),
+                Instant.parse("2026-12-02T12:00:00Z"),
+                1
+            ))
+        );
+
         List<String> deleteMethods = Arrays.stream(ReservationRepository.class.getDeclaredMethods())
             .map(Method::getName)
             .filter(name -> name.toLowerCase().startsWith("delete"))

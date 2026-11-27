@@ -34,6 +34,7 @@ public final class B {
         scheduleBusiness = new ScheduleBusiness(R.weeklySchedules(), catalogLookup, effectiveClock);
         rulesBusiness = new AvailabilityRulesBusiness(
             R.temporalBlocks(),
+            R.exceptions(),
             scheduleBusiness,
             catalogLookup,
             effectiveClock

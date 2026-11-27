@@ -74,6 +74,88 @@ public class ReservationRepository extends PostgresRepository {
         }, "ReservationRepository.insertAggregate");
     }
 
+    public StoredReservationAggregate insertAggregateWithCanonicalLocks(
+        List<UUID> canonicalResourceRoots,
+        StoredReservation header,
+        List<StoredReservationLine> lines
+    ) {
+        if (header == null || lines == null || lines.isEmpty()) {
+            throw new ReservationsRepositoryException("Reservation aggregate requires header and at least one line");
+        }
+        List<UUID> sortedLockKeys = canonicalLockOrder(canonicalResourceRoots);
+        String advisoryLockSql = "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))";
+        String overlapSql = """
+            SELECT 1
+            FROM reservations.reservation_line
+            WHERE resource_id = ?
+              AND status = 'ACTIVE'
+              AND tstzrange(start_at, end_at, '[)') && tstzrange(?::timestamptz, ?::timestamptz, '[)')
+            LIMIT 1
+            """;
+        String insertHeaderSql = "INSERT INTO reservations.reservation (" + HEADER_COLUMNS
+            + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        String insertLineSql = "INSERT INTO reservations.reservation_line (" + LINE_COLUMNS
+            + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+        return executeWithConnection(conn -> {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement psLock = conn.prepareStatement(advisoryLockSql)) {
+                    for (UUID key : sortedLockKeys) {
+                        psLock.setString(1, key.toString());
+                        psLock.execute();
+                    }
+                }
+                try (PreparedStatement psOverlap = conn.prepareStatement(overlapSql)) {
+                    for (StoredReservationLine line : lines) {
+                        psOverlap.setObject(1, line.resourceId());
+                        psOverlap.setTimestamp(2, Timestamp.from(line.startAt()));
+                        psOverlap.setTimestamp(3, Timestamp.from(line.endAt()));
+                        try (ResultSet rs = psOverlap.executeQuery()) {
+                            if (rs.next()) {
+                                conn.rollback();
+                                throw new ReservationsRepositoryException(
+                                    "Concurrent booking conflict detected under canonical lock",
+                                    null,
+                                    "23P01"
+                                );
+                            }
+                        }
+                    }
+                }
+                try (PreparedStatement psHeader = conn.prepareStatement(insertHeaderSql)) {
+                    bindHeader(psHeader, header);
+                    psHeader.executeUpdate();
+                }
+                try (PreparedStatement psLine = conn.prepareStatement(insertLineSql)) {
+                    for (StoredReservationLine line : lines) {
+                        bindLine(psLine, line);
+                        psLine.executeUpdate();
+                    }
+                }
+                conn.commit();
+                return new StoredReservationAggregate(header, List.copyOf(lines));
+            } catch (SQLException | RuntimeException ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        }, "ReservationRepository.insertAggregateWithCanonicalLocks");
+    }
+
+    public static List<UUID> canonicalLockOrder(List<UUID> lockKeys) {
+        if (lockKeys == null || lockKeys.isEmpty()) {
+            return List.of();
+        }
+        return lockKeys.stream()
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .sorted(java.util.Comparator.comparing(UUID::toString))
+            .toList();
+    }
+
     public Optional<StoredReservationAggregate> findById(UUID reservationId) {
         String headerSql = "SELECT " + HEADER_COLUMNS + " FROM reservations.reservation WHERE id = ?";
         String linesSql = "SELECT " + LINE_COLUMNS
