@@ -3,12 +3,14 @@ package app.resourcehub.reservations.business.logic.instance;
 import app.resourcehub.availability.business.logic.instance.AvailabilityRulesBusiness;
 import app.resourcehub.availability.business.logic.instance.ScheduleBusiness;
 import app.resourcehub.reservations.business.structs.CreateReservationCommand;
+import app.resourcehub.reservations.business.structs.ModifyReservationCommand;
 import app.resourcehub.reservations.business.structs.Reservation;
 import app.resourcehub.reservations.business.structs.ReservationLineItem;
 import app.resourcehub.reservations.business.structs.ReservationPage;
 import app.resourcehub.reservations.business.structs.ReservationStatus;
 import app.resourcehub.reservations.business.structs.ReservationsBusinessException;
 import app.resourcehub.reservations.repository.logic.local.ReservationRepository;
+import app.resourcehub.reservations.repository.structs.ReservationsRepositoryException;
 import app.resourcehub.reservations.repository.structs.StoredReservation;
 import app.resourcehub.reservations.repository.structs.StoredReservationAggregate;
 import app.resourcehub.reservations.repository.structs.StoredReservationLine;
@@ -33,6 +35,8 @@ public class ReservationBusiness {
     private static final String DEFAULT_CURRENCY = "EUR";
     private static final String LINE_STATUS_ACTIVE = "ACTIVE";
     private static final String PAYMENT_SIN_CARGO = "SIN_CARGO";
+    private static final String CANCELLATION_HOLDER = "HOLDER";
+    private static final String CANCELLATION_MANAGEMENT = "MANAGEMENT";
 
     private final ReservationRepository reservationRepository;
     private final Supplier<ScheduleBusiness> scheduleBusinessSupplier;
@@ -97,32 +101,7 @@ public class ReservationBusiness {
 
         TimeInterval slot = new TimeInterval(command.startAt(), command.endAt());
         CatalogResource resource = resourceLookup.apply(command.resourceId());
-
-        // Nivel 1 D-5: recurso habilitado
-        if (resource.status() != ResourceStatus.AVAILABLE) {
-            throw new ReservationsBusinessException(
-                ErrorCode.CATALOG_RESOURCE_NOT_BOOKABLE,
-                "Resource is not AVAILABLE for booking: " + resource.id()
-            );
-        }
-
-        // Nivel 4 D-5: cobertura completa dentro del horario recurrente semanal IANA
-        List<TimeInterval> weeklyWindows = scheduleBusinessSupplier.get()
-            .evaluateWeeklyWindows(resource.id(), slot, orgContext);
-        if (!isCoveredByWindows(weeklyWindows, slot)) {
-            throw new ReservationsBusinessException(
-                ErrorCode.AVAILABILITY_OUTSIDE_HOURS,
-                "Requested interval falls outside recurring weekly schedules"
-            );
-        }
-
-        // Nivel 2 D-5: ausencia de bloqueos temporales activos solapados
-        if (rulesBusinessSupplier.get().hasActiveBlockOverlapping(resource.id(), slot)) {
-            throw new ReservationsBusinessException(
-                ErrorCode.AVAILABILITY_RESOURCE_BLOCKED,
-                "Resource has an active temporal block in the requested interval"
-            );
-        }
+        validateSlotBookable(resource, slot, orgContext);
 
         // Nivel 5 D-5 / AC-003: ausencia de reservas ACTIVE solapadas en [startAt, endAt)
         List<StoredReservationLine> conflictingLines = reservationRepository.findActiveLinesOverlapping(
@@ -186,7 +165,7 @@ public class ReservationBusiness {
                 header,
                 List.of(line)
             );
-        } catch (app.resourcehub.reservations.repository.structs.ReservationsRepositoryException ex) {
+        } catch (ReservationsRepositoryException ex) {
             if ("23P01".equals(ex.getSqlState())) {
                 throw new ReservationsBusinessException(
                     ErrorCode.BOOKING_CONFLICT,
@@ -196,6 +175,140 @@ public class ReservationBusiness {
             throw ex;
         }
         return mapToDomain(persisted);
+    }
+
+    public Reservation modifyReservation(
+        ActorContext actor,
+        UUID reservationId,
+        ModifyReservationCommand command,
+        OrganizationContext orgContext
+    ) {
+        requireClientScope(actor);
+        if (reservationId == null || command == null || command.resourceId() == null || orgContext == null) {
+            throw new ReservationsBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "reservationId, command, resourceId and orgContext must not be null"
+            );
+        }
+        int units = command.requestedUnits() == null ? 1 : command.requestedUnits();
+        if (units != 1) {
+            throw new ReservationsBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "Modification currently supports requestedUnits = 1"
+            );
+        }
+
+        StoredReservationAggregate existing = reservationRepository.findById(reservationId)
+            .orElseThrow(() -> new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found"));
+        if (!existing.reservation().holderId().equals(actor.userId())) {
+            throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
+        }
+        ReservationStatus currentStatus = ReservationStatus.valueOf(existing.reservation().status());
+        if (!isModifiableStatus(currentStatus)) {
+            throw new ReservationsBusinessException(
+                ErrorCode.TRANSITION_NOT_ALLOWED,
+                "Reservation status does not allow modification: " + currentStatus
+            );
+        }
+
+        TimeInterval newSlot = new TimeInterval(command.startAt(), command.endAt());
+        CatalogResource newResource = resourceLookup.apply(command.resourceId());
+        validateSlotBookable(newResource, newSlot, orgContext);
+
+        List<StoredReservationLine> conflicts = reservationRepository.findActiveLinesOverlappingExcludingReservation(
+            newResource.id(),
+            newSlot.startAt(),
+            newSlot.endAt(),
+            reservationId
+        );
+        if (!conflicts.isEmpty()) {
+            throw new ReservationsBusinessException(
+                ErrorCode.BOOKING_CONFLICT,
+                "Target interval conflicts with another active reservation"
+            );
+        }
+
+        UUID oldRootId = existing.lines().isEmpty()
+            ? newResource.rootId()
+            : existing.lines().getFirst().resourceRootId();
+        StoredReservationLine replacementLine = new StoredReservationLine(
+            UuidV7Utils.generate(),
+            reservationId,
+            (short) 1,
+            newResource.id(),
+            newResource.rootId(),
+            newSlot.startAt(),
+            newSlot.endAt(),
+            1,
+            true,
+            LINE_STATUS_ACTIVE,
+            0L,
+            DEFAULT_CURRENCY
+        );
+
+        try {
+            StoredReservationAggregate updated = reservationRepository.modifyAggregateWithCanonicalLocks(
+                List.of(oldRootId, newResource.rootId()),
+                reservationId,
+                existing.reservation().version(),
+                clock.instant(),
+                replacementLine
+            ).orElseThrow(() -> new ReservationsBusinessException(
+                ErrorCode.TRANSITION_NOT_ALLOWED,
+                "Concurrent modification detected on reservation version"
+            ));
+            return mapToDomain(updated);
+        } catch (ReservationsRepositoryException ex) {
+            if ("23P01".equals(ex.getSqlState())) {
+                throw new ReservationsBusinessException(
+                    ErrorCode.BOOKING_CONFLICT,
+                    "Target interval conflicts with another active reservation"
+                );
+            }
+            throw ex;
+        }
+    }
+
+    public Reservation cancelReservation(ActorContext actor, UUID reservationId) {
+        if (actor == null) {
+            throw new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
+        }
+        String cancellationSource = resolveCancellationSource(actor);
+        if (reservationId == null) {
+            throw new ReservationsBusinessException(ErrorCode.VALIDATION_FAILED, "reservationId must not be null");
+        }
+
+        StoredReservationAggregate existing = reservationRepository.findById(reservationId)
+            .orElseThrow(() -> new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found"));
+        if (actor.operationalScope() == OperationalScope.AMB_01_CLIENT
+            && !existing.reservation().holderId().equals(actor.userId())) {
+            throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
+        }
+        ReservationStatus currentStatus = ReservationStatus.valueOf(existing.reservation().status());
+        if (!isModifiableStatus(currentStatus)) {
+            throw new ReservationsBusinessException(
+                ErrorCode.TRANSITION_NOT_ALLOWED,
+                "Reservation status does not allow cancellation: " + currentStatus
+            );
+        }
+
+        reservationRepository.updateStatus(
+            reservationId,
+            ReservationStatus.CANCELLED.name(),
+            null,
+            null,
+            cancellationSource,
+            null,
+            existing.reservation().version(),
+            clock.instant()
+        ).orElseThrow(() -> new ReservationsBusinessException(
+            ErrorCode.TRANSITION_NOT_ALLOWED,
+            "Concurrent modification detected while cancelling reservation"
+        ));
+
+        StoredReservationAggregate cancelled = reservationRepository.findById(reservationId)
+            .orElseThrow(() -> new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found"));
+        return mapToDomain(cancelled);
     }
 
     public ReservationPage listOwnReservations(ActorContext actor, int page, int size) {
@@ -228,6 +341,52 @@ public class ReservationBusiness {
             throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
         }
         return mapToDomain(aggregate);
+    }
+
+    private void validateSlotBookable(CatalogResource resource, TimeInterval slot, OrganizationContext orgContext) {
+        // Nivel 1 D-5: recurso habilitado
+        if (resource.status() != ResourceStatus.AVAILABLE) {
+            throw new ReservationsBusinessException(
+                ErrorCode.CATALOG_RESOURCE_NOT_BOOKABLE,
+                "Resource is not AVAILABLE for booking: " + resource.id()
+            );
+        }
+
+        // Niveles 4 y 3 D-5: cobertura completa dentro del horario recurrente + excepciones IANA
+        List<TimeInterval> scheduleWindows = rulesBusinessSupplier.get()
+            .evaluateScheduleWithExceptions(resource.id(), slot, orgContext);
+        if (!isCoveredByWindows(scheduleWindows, slot)) {
+            throw new ReservationsBusinessException(
+                ErrorCode.AVAILABILITY_OUTSIDE_HOURS,
+                "Requested interval falls outside recurring weekly schedules"
+            );
+        }
+
+        // Nivel 2 D-5: ausencia de bloqueos temporales activos solapados
+        if (rulesBusinessSupplier.get().hasActiveBlockOverlapping(resource.id(), slot)) {
+            throw new ReservationsBusinessException(
+                ErrorCode.AVAILABILITY_RESOURCE_BLOCKED,
+                "Resource has an active temporal block in the requested interval"
+            );
+        }
+    }
+
+    private static String resolveCancellationSource(ActorContext actor) {
+        if (actor.operationalScope() == OperationalScope.AMB_01_CLIENT) {
+            return CANCELLATION_HOLDER;
+        }
+        if (actor.operationalScope() == OperationalScope.AMB_03_MANAGEMENT
+            && ("AD".equals(actor.actorRole()) || "MG".equals(actor.actorRole()))) {
+            return CANCELLATION_MANAGEMENT;
+        }
+        throw new ReservationsBusinessException(
+            ErrorCode.SCOPE_VIOLATION,
+            "Operational scope not authorized to cancel reservations"
+        );
+    }
+
+    private static boolean isModifiableStatus(ReservationStatus status) {
+        return status == ReservationStatus.CONFIRMED || status == ReservationStatus.PENDING;
     }
 
     private static void requireClientScope(ActorContext actor) {
