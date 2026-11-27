@@ -3,15 +3,15 @@ package app.resourcehub.platform.api.logic.services;
 import app.resourcehub.platform.business.B;
 import app.resourcehub.platform.business.structs.ErrorCatalogEntry;
 import app.resourcehub.shared.api.structs.ResponseWrapper;
-import app.resourcehub.shared.business.utils.UuidV7Utils;
 import java.time.Clock;
 import java.util.List;
+import java.util.UUID;
 
 public class ErrorCatalogService {
 
     public ResponseWrapper<List<ErrorCatalogEntry>> getErrorCatalog(String requestId, Clock clock) {
         String effectiveRequestId = (requestId == null || requestId.isBlank())
-            ? UuidV7Utils.generate().toString()
+            ? UUID.randomUUID().toString()
             : requestId;
         Clock effectiveClock = clock != null ? clock : Clock.systemUTC();
         List<ErrorCatalogEntry> entries = B.errorCatalog().loadErrorCatalog();

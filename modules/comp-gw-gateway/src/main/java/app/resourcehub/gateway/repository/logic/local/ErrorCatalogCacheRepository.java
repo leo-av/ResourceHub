@@ -1,8 +1,6 @@
 package app.resourcehub.gateway.repository.logic.local;
 
 import app.resourcehub.gateway.repository.structs.CachedErrorDefinition;
-import app.resourcehub.platform.business.B;
-import app.resourcehub.platform.business.structs.ErrorCatalogEntry;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import java.util.EnumMap;
 import java.util.List;
@@ -26,14 +24,14 @@ public class ErrorCatalogCacheRepository {
         "Servicio temporalmente no disponible"
     );
 
-    private final Supplier<List<ErrorCatalogEntry>> catalogSupplier;
+    private final Supplier<List<CachedErrorDefinition>> catalogSupplier;
     private final AtomicReference<Map<ErrorCode, CachedErrorDefinition>> cacheRef = new AtomicReference<>(Map.of());
 
     public ErrorCatalogCacheRepository() {
-        this(() -> B.errorCatalog().loadErrorCatalog());
+        this(List::of);
     }
 
-    public ErrorCatalogCacheRepository(Supplier<List<ErrorCatalogEntry>> catalogSupplier) {
+    public ErrorCatalogCacheRepository(Supplier<List<CachedErrorDefinition>> catalogSupplier) {
         if (catalogSupplier == null) {
             throw new IllegalArgumentException("catalogSupplier must not be null");
         }
@@ -42,23 +40,13 @@ public class ErrorCatalogCacheRepository {
 
     public boolean refresh() {
         try {
-            List<ErrorCatalogEntry> entries = catalogSupplier.get();
+            List<CachedErrorDefinition> entries = catalogSupplier.get();
             if (entries == null || entries.isEmpty()) {
                 return false;
             }
             Map<ErrorCode, CachedErrorDefinition> next = new EnumMap<>(ErrorCode.class);
-            for (ErrorCatalogEntry entry : entries) {
-                if (entry.active()) {
-                    next.put(
-                        entry.code(),
-                        new CachedErrorDefinition(
-                            entry.code(),
-                            entry.numericValue(),
-                            entry.httpStatus(),
-                            entry.defaultMessage()
-                        )
-                    );
-                }
+            for (CachedErrorDefinition entry : entries) {
+                next.put(entry.code(), entry);
             }
             next.putIfAbsent(ErrorCode.INTERNAL_ERROR, FALLBACK_INTERNAL_ERROR);
             next.putIfAbsent(ErrorCode.SERVICE_UNAVAILABLE, FALLBACK_SERVICE_UNAVAILABLE);
@@ -84,9 +72,6 @@ public class ErrorCatalogCacheRepository {
         }
         if (code == ErrorCode.SERVICE_UNAVAILABLE) {
             return FALLBACK_SERVICE_UNAVAILABLE;
-        }
-        if (code == ErrorCode.INTERNAL_ERROR) {
-            return FALLBACK_INTERNAL_ERROR;
         }
         return FALLBACK_INTERNAL_ERROR;
     }

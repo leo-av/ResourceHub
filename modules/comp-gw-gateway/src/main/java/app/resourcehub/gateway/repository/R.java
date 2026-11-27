@@ -1,7 +1,7 @@
 package app.resourcehub.gateway.repository;
 
 import app.resourcehub.gateway.repository.logic.local.ErrorCatalogCacheRepository;
-import app.resourcehub.platform.business.structs.ErrorCatalogEntry;
+import app.resourcehub.gateway.repository.structs.CachedErrorDefinition;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -17,7 +17,7 @@ public final class R {
         errorCatalogCacheRepository = new ErrorCatalogCacheRepository();
     }
 
-    public static void init(Supplier<List<ErrorCatalogEntry>> catalogSupplier) {
+    public static void init(Supplier<List<CachedErrorDefinition>> catalogSupplier) {
         errorCatalogCacheRepository = new ErrorCatalogCacheRepository(catalogSupplier);
         errorCatalogCacheRepository.refresh();
     }
