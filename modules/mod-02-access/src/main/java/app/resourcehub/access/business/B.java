@@ -26,6 +26,7 @@ public final class B {
             R.users(),
             R.localCredentials(),
             R.refreshTokens(),
+            R.personalData(),
             effectiveClock,
             JwtTokenUtils.generateEd25519KeyPair()
         );

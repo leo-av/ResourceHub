@@ -5,13 +5,18 @@ import app.resourcehub.access.business.logic.instance.UserBusiness;
 import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.access.business.structs.AuthTokenBundle;
 import app.resourcehub.access.business.structs.IdentityAccount;
+import app.resourcehub.access.business.structs.IdentityStatus;
 import app.resourcehub.access.business.structs.UserProfile;
 import app.resourcehub.access.business.structs.UserRole;
+import app.resourcehub.access.business.structs.UserSummary;
 import app.resourcehub.access.business.utils.JwtTokenUtils;
 import app.resourcehub.access.repository.logic.local.LocalCredentialRepository;
+import app.resourcehub.access.repository.logic.local.PersonalDataRepository;
 import app.resourcehub.access.repository.logic.local.RefreshTokenRepository;
 import app.resourcehub.access.repository.logic.local.UserRepository;
+import app.resourcehub.access.repository.structs.AccessRepositoryException;
 import app.resourcehub.access.repository.structs.StoredIdentityAccount;
+import app.resourcehub.access.repository.structs.StoredPersonalData;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import app.resourcehub.shared.business.structs.OperationalScope;
@@ -22,8 +27,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -378,6 +385,100 @@ class AuthBusinessTest {
         )).extracting(ex -> ((AccessBusinessException) ex).getErrorCode()).isEqualTo(ErrorCode.UNAUTHENTICATED);
     }
 
+    @Test
+    @DisplayName("TT-016 [PRU-01]: PII Vault personal_data, unicidad LOWER(email) e hidratacion O(1) con baja RGPD")
+    void shouldPersistCredentialsInPersonalVaultResolveSummariesAndHandleGdprAbsence() {
+        InMemoryPersonalDataRepository vaultRepo = new InMemoryPersonalDataRepository();
+        AuthBusiness vaultAuth = new AuthBusiness(
+            userRepository,
+            credentialRepository,
+            refreshTokenRepository,
+            vaultRepo,
+            mutableClock,
+            keyPair
+        );
+
+        assertThatThrownBy(() -> new AuthBusiness(
+            userRepository, credentialRepository, refreshTokenRepository, null, mutableClock, keyPair
+        )).isInstanceOf(IllegalArgumentException.class);
+
+        IdentityAccount user1 = userBusiness.createIdentityAccount(UserRole.US, null);
+        IdentityAccount user2 = userBusiness.createIdentityAccount(UserRole.MG, null);
+        UUID deletedUserId = UUID.fromString("01936a00-0099-7000-8000-000000000099");
+
+        UserSummary summary1 = vaultAuth.registerPersonalProfile(user1.id(), "Ana.Gomez@Example.com", "Ana Gomez", "+34600111222");
+        assertThat(summary1.fullName()).isEqualTo("Ana Gomez");
+        assertThat(summary1.email()).isEqualTo("ana.gomez@example.com");
+        assertThat(summary1.anonymized()).isFalse();
+
+        // Registrar credencial preserva fullName y phone existentes y permite autenticar desde vault
+        vaultAuth.registerLocalCredential(ORG_ID, user1.id(), "ana.gomez@example.com", "VaultPass2026!".toCharArray());
+        AuthTokenBundle tokenBundle = vaultAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_01_CLIENT, "ANA.GOMEZ@example.com", "VaultPass2026!".toCharArray()
+        );
+        assertThat(tokenBundle.userId()).isEqualTo(user1.id());
+
+        // Registrar credencial directa sin perfil previo usa prefijo de email como nombre inicial
+        vaultAuth.registerLocalCredential(ORG_ID, user2.id(), "carlos@example.com", "ManagerVault2026!".toCharArray());
+
+        // Email duplicado en otro usuario -> ALREADY_EXISTS
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(
+            user2.id(), "ANA.GOMEZ@example.com", "Carlos Ruiz", null
+        ))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.ALREADY_EXISTS);
+
+        // Hidratacion O(1) en lote con 2 usuarios existentes + 1 ausente -> "Usuario eliminado (RGPD)"
+        Set<UUID> requested = new LinkedHashSet<>();
+        requested.add(user1.id());
+        requested.add(user2.id());
+        requested.add(deletedUserId);
+        Map<UUID, UserSummary> resolved = vaultAuth.resolveUserSummaries(requested);
+        assertThat(resolved).hasSize(3);
+        assertThat(resolved.get(user1.id()).fullName()).isEqualTo("Ana Gomez");
+        assertThat(resolved.get(user2.id()).fullName()).isEqualTo("carlos");
+        assertThat(resolved.get(deletedUserId).anonymized()).isTrue();
+        assertThat(resolved.get(deletedUserId).fullName()).isEqualTo("Usuario eliminado (RGPD)");
+        assertThat(resolved.get(deletedUserId).email()).isNull();
+
+        assertThat(vaultAuth.resolveUserSummaries(Set.of())).isEmpty();
+        assertThat(authBusiness.resolveUserSummaries(Set.of(user1.id())).get(user1.id()).anonymized()).isTrue();
+
+        // Validaciones de errores
+        assertThatThrownBy(() -> vaultAuth.resolveUserSummaries(null))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(null, "a@b.com", "Nombre", null))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(user1.id(), "a@b.com", "   ", null))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(user1.id(), "a@b.com", "x".repeat(151), null))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(user1.id(), "a@b.com", "Nombre", "1".repeat(33)))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(user1.id(), "a".repeat(250) + "@b.com", "Nombre", null))
+            .isInstanceOf(AccessBusinessException.class);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(UUID.randomUUID(), "new@b.com", "Nombre", null))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+        userRepository.updateStatus(user2.id(), IdentityStatus.DELETED_GDPR.name(), FIXED_NOW, FIXED_NOW);
+        assertThatThrownBy(() -> vaultAuth.registerPersonalProfile(user2.id(), "carlos@example.com", "Carlos", null))
+            .isInstanceOf(AccessBusinessException.class)
+            .extracting(ex -> ((AccessBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+        assertThatThrownBy(() -> authBusiness.registerPersonalProfile(user1.id(), "ana@b.com", "Ana", null))
+            .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> vaultAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_01_CLIENT, "noexiste@example.com", "Pass2026!".toCharArray()
+        )).isInstanceOf(AccessBusinessException.class);
+        IdentityAccount noPassUser = userBusiness.createIdentityAccount(UserRole.US, null);
+        vaultAuth.registerPersonalProfile(noPassUser.id(), "nopass@example.com", "Sin Pass", null);
+        assertThatThrownBy(() -> vaultAuth.authenticateLocal(
+            ORG_ID, OperationalScope.AMB_01_CLIENT, "nopass@example.com", "AnyPass2026!".toCharArray()
+        )).isInstanceOf(AccessBusinessException.class);
+    }
+
     private static final class MutableClock extends Clock {
         private Instant current;
 
@@ -437,6 +538,66 @@ class AuthBusinessTest {
 
         private void removeForTest(UUID id) {
             storage.remove(id);
+        }
+    }
+
+    private static final class InMemoryPersonalDataRepository extends PersonalDataRepository {
+
+        private final Map<UUID, StoredPersonalData> byUserId = new LinkedHashMap<>();
+
+        @Override
+        public boolean isConfigured() {
+            return true;
+        }
+
+        @Override
+        public StoredPersonalData upsert(StoredPersonalData data) {
+            for (StoredPersonalData existing : byUserId.values()) {
+                if (!existing.userId().equals(data.userId())
+                    && existing.email().equalsIgnoreCase(data.email())) {
+                    throw new AccessRepositoryException("Duplicate email", new RuntimeException(), "23505");
+                }
+            }
+            StoredPersonalData previous = byUserId.get(data.userId());
+            String passwordHash = data.passwordHash() != null
+                ? data.passwordHash()
+                : (previous != null ? previous.passwordHash() : null);
+            StoredPersonalData stored = new StoredPersonalData(
+                data.userId(),
+                data.email(),
+                data.fullName(),
+                data.phone(),
+                passwordHash,
+                data.calendarSyncConsent(),
+                data.calendarSyncConsentAt(),
+                data.updatedAt()
+            );
+            byUserId.put(data.userId(), stored);
+            return stored;
+        }
+
+        @Override
+        public Optional<StoredPersonalData> findByUserId(UUID userId) {
+            return Optional.ofNullable(byUserId.get(userId));
+        }
+
+        @Override
+        public Optional<StoredPersonalData> findByEmailIgnoreCase(String email) {
+            return byUserId.values().stream()
+                .filter(item -> item.email().equalsIgnoreCase(email))
+                .findFirst();
+        }
+
+        @Override
+        public Map<UUID, StoredPersonalData> findByUserIds(Set<UUID> userIds) {
+            Map<UUID, StoredPersonalData> result = new LinkedHashMap<>();
+            for (UUID id : userIds) {
+                StoredPersonalData found = byUserId.get(id);
+                if (found != null) {
+                    result.put(id, found);
+                }
+            }
+            return result;
         }
     }
 }
