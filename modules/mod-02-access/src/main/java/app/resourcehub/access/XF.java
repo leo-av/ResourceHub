@@ -2,9 +2,11 @@ package app.resourcehub.access;
 
 import app.resourcehub.access.api.A;
 import app.resourcehub.access.business.B;
+import app.resourcehub.access.business.structs.UserPersonLinkDisabledEvent;
 import app.resourcehub.access.repository.R;
 import java.time.Clock;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import javax.sql.DataSource;
 
@@ -21,7 +23,8 @@ public final class XF {
     }
 
     public static void init(DataSource dataSource, Clock clock) {
-        init(dataSource, clock, orgId -> Boolean.FALSE);
+        init(dataSource, clock, orgId -> Boolean.FALSE, ev -> {
+        });
     }
 
     public static void init(
@@ -29,8 +32,18 @@ public final class XF {
         Clock clock,
         Function<UUID, Boolean> allowStandardUserSpaceBookingResolver
     ) {
+        init(dataSource, clock, allowStandardUserSpaceBookingResolver, ev -> {
+        });
+    }
+
+    public static void init(
+        DataSource dataSource,
+        Clock clock,
+        Function<UUID, Boolean> allowStandardUserSpaceBookingResolver,
+        Consumer<UserPersonLinkDisabledEvent> personLinkDisabledListener
+    ) {
         R.init(dataSource);
-        B.init(clock, allowStandardUserSpaceBookingResolver);
+        B.init(clock, allowStandardUserSpaceBookingResolver, personLinkDisabledListener);
         A.init();
     }
 

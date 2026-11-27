@@ -2,11 +2,13 @@ package app.resourcehub.access.api;
 
 import app.resourcehub.access.api.logic.services.AppAuthService;
 import app.resourcehub.access.api.logic.services.ConsoleAuthService;
+import app.resourcehub.access.api.logic.services.ConsoleUserService;
 
 public final class A {
 
     private static AppAuthService appAuthService;
     private static ConsoleAuthService consoleAuthService;
+    private static ConsoleUserService consoleUserService;
 
     private A() {
         throw new UnsupportedOperationException("Static XF api injector");
@@ -15,6 +17,7 @@ public final class A {
     public static void init() {
         appAuthService = new AppAuthService();
         consoleAuthService = new ConsoleAuthService();
+        consoleUserService = new ConsoleUserService();
     }
 
     public static AppAuthService appAuth() {
@@ -31,8 +34,16 @@ public final class A {
         return consoleAuthService;
     }
 
+    public static ConsoleUserService consoleUsers() {
+        if (consoleUserService == null) {
+            throw new IllegalStateException("A.init() has not been called");
+        }
+        return consoleUserService;
+    }
+
     public static void terminate() {
         appAuthService = null;
         consoleAuthService = null;
+        consoleUserService = null;
     }
 }

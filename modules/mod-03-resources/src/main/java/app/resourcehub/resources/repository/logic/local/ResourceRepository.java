@@ -201,6 +201,22 @@ public class ResourceRepository extends PostgresRepository {
         }, "ResourceRepository.updateStatus");
     }
 
+    public List<StoredResource> findByLinkedUserId(UUID linkedUserId) {
+        String sql = BASE_SELECT + " WHERE linked_user_id = ? ORDER BY created_at ASC, id ASC";
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setObject(1, linkedUserId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<StoredResource> results = new ArrayList<>();
+                    while (rs.next()) {
+                        results.add(mapRow(rs));
+                    }
+                    return List.copyOf(results);
+                }
+            }
+        }, "ResourceRepository.findByLinkedUserId");
+    }
+
     private static StoredResource mapRow(ResultSet rs) throws SQLException {
         return new StoredResource(
             rs.getObject("id", UUID.class),

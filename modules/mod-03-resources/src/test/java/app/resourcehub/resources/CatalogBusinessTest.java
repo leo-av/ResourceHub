@@ -366,6 +366,74 @@ class CatalogBusinessTest {
         resourceRepository.forcedSqlState = null;
     }
 
+    @Test
+    @DisplayName("TT-024 RN-ACC-003: deshabilita PERSON al inactivar usuario y bloquea reactivacion")
+    void shouldSyncPersonResourceOnUserDisabledAndBlockReEnableWhileUserInactive() {
+        ResourceType personType = resourceTypeBusiness.createResourceType(
+            "PERSON_PHYSIO",
+            "Fisioterapeuta",
+            "Profesional sanitario",
+            ResourceNature.PERSON
+        );
+        UUID activeUserId = UUID.fromString("01936a00-0010-7000-8000-000000000701");
+        UUID inactiveUserId = UUID.fromString("01936a00-0010-7000-8000-000000000702");
+        final boolean[] activeUserFlag = {true};
+
+        ResourceBusiness syncBusiness = new ResourceBusiness(
+            resourceRepository,
+            resourceTypeRepository,
+            FIXED_CLOCK,
+            uid -> activeUserId.equals(uid) && activeUserFlag[0]
+        );
+
+        assertThatThrownBy(() -> syncBusiness.createSimpleResource(
+            personType.id(),
+            "PRO-INACTIVE",
+            "Pro Inactivo",
+            null,
+            1,
+            false,
+            false,
+            inactiveUserId
+        ))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+
+        CatalogResource personResource = syncBusiness.createSimpleResource(
+            personType.id(),
+            "PRO-01",
+            "Dra. Marina Soler",
+            "Consulta 2",
+            1,
+            false,
+            false,
+            activeUserId
+        );
+        assertThat(personResource.status()).isEqualTo(ResourceStatus.AVAILABLE);
+
+        // Al desactivar al usuario, RN-ACC-003 transiciona el recurso a DISABLED
+        activeUserFlag[0] = false;
+        syncBusiness.onUserPersonLinkDisabled(activeUserId, personResource.id());
+        CatalogResource afterSync = syncBusiness.findById(personResource.id()).orElseThrow();
+        assertThat(afterSync.status()).isEqualTo(ResourceStatus.DISABLED);
+
+        // Re-ejecucion idempotente no falla si ya esta DISABLED
+        syncBusiness.onUserPersonLinkDisabled(activeUserId, personResource.id());
+        syncBusiness.onUserPersonLinkDisabled(null, null);
+
+        // No permite reactivar a AVAILABLE mientras el usuario enlazado siga inactivo
+        assertThatThrownBy(() -> syncBusiness.enableResource(personResource.id()))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+
+        // Una vez reactivado el usuario, enableResource vuelve a AVAILABLE
+        activeUserFlag[0] = true;
+        CatalogResource reEnabled = syncBusiness.enableResource(personResource.id());
+        assertThat(reEnabled.status()).isEqualTo(ResourceStatus.AVAILABLE);
+    }
+
     private static final class InMemoryResourceTypeRepository extends ResourceTypeRepository {
         private final Map<UUID, StoredResourceType> byId = new LinkedHashMap<>();
         private String forcedSqlState;
@@ -441,6 +509,16 @@ class CatalogBusinessTest {
             return byId.values().stream()
                 .filter(r -> r.code().equalsIgnoreCase(code))
                 .findFirst();
+        }
+
+        @Override
+        public List<StoredResource> findByLinkedUserId(UUID linkedUserId) {
+            if (linkedUserId == null) {
+                return List.of();
+            }
+            return byId.values().stream()
+                .filter(r -> linkedUserId.equals(r.linkedUserId()))
+                .toList();
         }
 
         @Override
