@@ -1,5 +1,6 @@
 package app.resourcehub.resources.business.logic.instance;
 
+import app.resourcehub.resources.business.structs.CatalogPage;
 import app.resourcehub.resources.business.structs.CatalogResource;
 import app.resourcehub.resources.business.structs.ResourceStatus;
 import app.resourcehub.resources.business.structs.ResourcesBusinessException;
@@ -21,6 +22,7 @@ public class ResourceBusiness {
     private static final int MAX_CODE_LENGTH = 50;
     private static final int MAX_NAME_LENGTH = 150;
     private static final int MAX_DESCRIPTION_LENGTH = 1000;
+    private static final int MAX_PAGE_SIZE = 100;
     private static final short ROOT_DEPTH = 1;
 
     private final ResourceRepository resourceRepository;
@@ -115,6 +117,11 @@ public class ResourceBusiness {
         }
     }
 
+    public CatalogResource getResourceDescriptor(UUID resourceId) {
+        return findById(resourceId)
+            .orElseThrow(() -> new ResourcesBusinessException(ErrorCode.NOT_FOUND, "Resource not found"));
+    }
+
     public Optional<CatalogResource> findById(UUID id) {
         if (id == null) {
             throw new ResourcesBusinessException(ErrorCode.VALIDATION_FAILED, "resourceId must not be null");
@@ -141,6 +148,24 @@ public class ResourceBusiness {
             .toList();
     }
 
+    public CatalogPage listPage(int page, int size) {
+        return listFilteredPage(null, page, size);
+    }
+
+    public CatalogPage listAvailablePage(int page, int size) {
+        return listFilteredPage(ResourceStatus.AVAILABLE.name(), page, size);
+    }
+
+    public CatalogResource transitionStatus(UUID id, ResourceStatus targetStatus) {
+        if (targetStatus == null) {
+            throw new ResourcesBusinessException(ErrorCode.VALIDATION_FAILED, "targetStatus must not be null");
+        }
+        if (targetStatus == ResourceStatus.DISABLED) {
+            return disableResource(id);
+        }
+        return enableResource(id);
+    }
+
     public CatalogResource disableResource(UUID id) {
         CatalogResource existing = findById(id)
             .orElseThrow(() -> new ResourcesBusinessException(ErrorCode.NOT_FOUND, "Resource not found"));
@@ -163,6 +188,22 @@ public class ResourceBusiness {
             );
         }
         return mapToDomain(resourceRepository.updateStatus(id, ResourceStatus.AVAILABLE.name(), clock.instant()));
+    }
+
+    private CatalogPage listFilteredPage(String optionalStatus, int page, int size) {
+        if (page < 1) {
+            throw new ResourcesBusinessException(ErrorCode.VALIDATION_FAILED, "page must be >= 1");
+        }
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new ResourcesBusinessException(ErrorCode.VALIDATION_FAILED, "size must be between 1 and 100");
+        }
+        long total = resourceRepository.countByOptionalStatus(optionalStatus);
+        int totalPages = total == 0L ? 0 : (int) ((total + size - 1L) / size);
+        int offset = (page - 1) * size;
+        List<CatalogResource> items = resourceRepository.findPaged(optionalStatus, size, offset).stream()
+            .map(ResourceBusiness::mapToDomain)
+            .toList();
+        return new CatalogPage(items, page, size, total, totalPages);
     }
 
     private static String toLtreeNodeLabel(UUID resourceId) {
