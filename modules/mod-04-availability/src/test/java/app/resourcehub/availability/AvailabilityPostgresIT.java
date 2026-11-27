@@ -81,8 +81,8 @@ class AvailabilityPostgresIT {
             .migrate();
 
         dbaApiDataSource = new SimpleDriverDataSource(POSTGRES.getJdbcUrl(), DBA_API_USER, DBA_API_PASS);
-        app.resourcehub.platform.XF.init(dbaApiDataSource, FIXED_CLOCK);
-        app.resourcehub.gateway.XF.init(dbaApiDataSource, FIXED_CLOCK);
+        app.resourcehub.platform.XF.init(dbaApiDataSource);
+        app.resourcehub.gateway.XF.init(FIXED_CLOCK);
         app.resourcehub.resources.XF.init(dbaApiDataSource, FIXED_CLOCK);
         XF.init(dbaApiDataSource, FIXED_CLOCK);
     }
@@ -319,7 +319,7 @@ class AvailabilityPostgresIT {
         );
         GatewayResponse<Void> gwResp = app.resourcehub.gateway.api.A.edgeGateway().handleInternalProblem(gwReq, problem);
         assertThat(gwResp.httpStatus()).isEqualTo(403);
-        assertThat(gwResp.body().code()).isEqualTo("200003");
+        assertThat(gwResp.body().code()).isEqualTo(200003);
     }
 
     private static int countTableColumns(Connection conn, String schema, String table) throws SQLException {
