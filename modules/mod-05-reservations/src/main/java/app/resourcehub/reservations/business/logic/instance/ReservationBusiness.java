@@ -179,7 +179,22 @@ public class ReservationBusiness {
             DEFAULT_CURRENCY
         );
 
-        StoredReservationAggregate persisted = reservationRepository.insertAggregate(header, List.of(line));
+        StoredReservationAggregate persisted;
+        try {
+            persisted = reservationRepository.insertAggregateWithCanonicalLocks(
+                List.of(resource.rootId()),
+                header,
+                List.of(line)
+            );
+        } catch (app.resourcehub.reservations.repository.structs.ReservationsRepositoryException ex) {
+            if ("23P01".equals(ex.getSqlState())) {
+                throw new ReservationsBusinessException(
+                    ErrorCode.BOOKING_CONFLICT,
+                    "Requested interval conflicts with an existing active reservation"
+                );
+            }
+            throw ex;
+        }
         return mapToDomain(persisted);
     }
 
