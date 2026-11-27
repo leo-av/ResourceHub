@@ -101,6 +101,46 @@ public class UserRepository extends PostgresRepository {
         }, "UserRepository.updateStatus");
     }
 
+    public StoredIdentityAccount updateAccount(
+        UUID id,
+        String roleCode,
+        String status,
+        UUID linkedPersonResourceId,
+        Instant updatedAt,
+        Instant deletedAt
+    ) {
+        String sql = """
+            UPDATE access.identity_account
+            SET role_code = ?, status = ?, linked_person_resource_id = ?, updated_at = ?, deleted_at = ?
+            WHERE id = ?
+            RETURNING id, role_code, status, linked_person_resource_id, created_at, updated_at, deleted_at
+            """;
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, roleCode);
+                ps.setString(2, status);
+                if (linkedPersonResourceId != null) {
+                    ps.setObject(3, linkedPersonResourceId);
+                } else {
+                    ps.setNull(3, Types.OTHER);
+                }
+                ps.setTimestamp(4, Timestamp.from(updatedAt));
+                if (deletedAt != null) {
+                    ps.setTimestamp(5, Timestamp.from(deletedAt));
+                } else {
+                    ps.setNull(5, Types.TIMESTAMP_WITH_TIMEZONE);
+                }
+                ps.setObject(6, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        throw new SQLException("Identity account not found: " + id);
+                    }
+                    return mapRow(rs);
+                }
+            }
+        }, "UserRepository.updateAccount");
+    }
+
     public List<StoredIdentityAccount> findAll() {
         String sql = BASE_SELECT + " ORDER BY created_at ASC, id ASC";
         return executeWithConnection(conn -> {
@@ -113,6 +153,34 @@ public class UserRepository extends PostgresRepository {
             }
             return List.copyOf(results);
         }, "UserRepository.findAll");
+    }
+
+    public List<StoredIdentityAccount> findPaged(int limit, int offset) {
+        String sql = BASE_SELECT + " ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?";
+        return executeWithConnection(conn -> {
+            List<StoredIdentityAccount> results = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setInt(1, limit);
+                ps.setInt(2, offset);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        results.add(mapRow(rs));
+                    }
+                }
+            }
+            return List.copyOf(results);
+        }, "UserRepository.findPaged");
+    }
+
+    public long countAll() {
+        String sql = "SELECT COUNT(*) FROM access.identity_account";
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql);
+                 ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }, "UserRepository.countAll");
     }
 
     private static StoredIdentityAccount mapRow(ResultSet rs) throws SQLException {

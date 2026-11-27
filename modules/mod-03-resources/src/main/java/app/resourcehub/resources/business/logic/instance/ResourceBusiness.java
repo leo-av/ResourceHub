@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 public class ResourceBusiness {
 
@@ -29,11 +30,21 @@ public class ResourceBusiness {
     private final ResourceRepository resourceRepository;
     private final ResourceTypeRepository resourceTypeRepository;
     private final Clock clock;
+    private final Predicate<UUID> linkedUserActiveChecker;
 
     public ResourceBusiness(
         ResourceRepository resourceRepository,
         ResourceTypeRepository resourceTypeRepository,
         Clock clock
+    ) {
+        this(resourceRepository, resourceTypeRepository, clock, userId -> true);
+    }
+
+    public ResourceBusiness(
+        ResourceRepository resourceRepository,
+        ResourceTypeRepository resourceTypeRepository,
+        Clock clock,
+        Predicate<UUID> linkedUserActiveChecker
     ) {
         if (resourceRepository == null) {
             throw new IllegalArgumentException("resourceRepository must not be null");
@@ -47,6 +58,7 @@ public class ResourceBusiness {
         this.resourceRepository = resourceRepository;
         this.resourceTypeRepository = resourceTypeRepository;
         this.clock = clock;
+        this.linkedUserActiveChecker = linkedUserActiveChecker != null ? linkedUserActiveChecker : userId -> true;
     }
 
     public CatalogResource createSimpleResource(
@@ -81,6 +93,12 @@ public class ResourceBusiness {
             throw new ResourcesBusinessException(
                 ErrorCode.VALIDATION_FAILED,
                 "linkedUserId is only allowed for PERSON resources"
+            );
+        }
+        if (linkedUserId != null && !linkedUserActiveChecker.test(linkedUserId)) {
+            throw new ResourcesBusinessException(
+                ErrorCode.TRANSITION_NOT_ALLOWED,
+                "Cannot link inactive user to PERSON resource"
             );
         }
         if (resourceRepository.findByCode(cleanCode).isPresent()) {
@@ -194,7 +212,31 @@ public class ResourceBusiness {
                 "Only DISABLED resources can transition to AVAILABLE"
             );
         }
+        if (existing.linkedUserId() != null && !linkedUserActiveChecker.test(existing.linkedUserId())) {
+            throw new ResourcesBusinessException(
+                ErrorCode.TRANSITION_NOT_ALLOWED,
+                "Cannot enable PERSON resource while linked user is inactive"
+            );
+        }
         return mapToDomain(resourceRepository.updateStatus(id, ResourceStatus.AVAILABLE.name(), clock.instant()));
+    }
+
+    public void onUserPersonLinkDisabled(UUID userId, UUID linkedPersonResourceId) {
+        Instant now = clock.instant();
+        if (linkedPersonResourceId != null) {
+            resourceRepository.findById(linkedPersonResourceId).ifPresent(stored -> {
+                if (ResourceStatus.AVAILABLE.name().equals(stored.status())) {
+                    resourceRepository.updateStatus(stored.id(), ResourceStatus.DISABLED.name(), now);
+                }
+            });
+        }
+        if (userId != null) {
+            for (StoredResource stored : resourceRepository.findByLinkedUserId(userId)) {
+                if (ResourceStatus.AVAILABLE.name().equals(stored.status())) {
+                    resourceRepository.updateStatus(stored.id(), ResourceStatus.DISABLED.name(), now);
+                }
+            }
+        }
     }
 
     private CatalogPage listFilteredPage(String optionalStatus, int page, int size) {

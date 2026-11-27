@@ -3,10 +3,12 @@ package app.resourcehub.access.business;
 import app.resourcehub.access.business.logic.instance.AuthBusiness;
 import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
 import app.resourcehub.access.business.logic.instance.UserBusiness;
+import app.resourcehub.access.business.structs.UserPersonLinkDisabledEvent;
 import app.resourcehub.access.business.utils.JwtTokenUtils;
 import app.resourcehub.access.repository.R;
 import java.time.Clock;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public final class B {
@@ -20,16 +22,34 @@ public final class B {
     }
 
     public static void init() {
-        init(Clock.systemUTC(), orgId -> Boolean.FALSE);
+        init(Clock.systemUTC(), orgId -> Boolean.FALSE, ev -> {
+        });
     }
 
     public static void init(Clock clock) {
-        init(clock, orgId -> Boolean.FALSE);
+        init(clock, orgId -> Boolean.FALSE, ev -> {
+        });
     }
 
     public static void init(Clock clock, Function<UUID, Boolean> allowStandardUserSpaceBookingResolver) {
+        init(clock, allowStandardUserSpaceBookingResolver, ev -> {
+        });
+    }
+
+    public static void init(
+        Clock clock,
+        Function<UUID, Boolean> allowStandardUserSpaceBookingResolver,
+        Consumer<UserPersonLinkDisabledEvent> personLinkDisabledListener
+    ) {
         Clock effectiveClock = clock != null ? clock : Clock.systemUTC();
-        userBusiness = new UserBusiness(R.users(), effectiveClock);
+        userBusiness = new UserBusiness(
+            R.users(),
+            effectiveClock,
+            R.personalData(),
+            R.localCredentials(),
+            R.refreshTokens(),
+            personLinkDisabledListener
+        );
         authBusiness = new AuthBusiness(
             R.users(),
             R.localCredentials(),
