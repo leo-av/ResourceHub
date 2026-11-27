@@ -75,14 +75,26 @@ public class AppAuthService {
     }
 
     private static int mapHttpStatus(ErrorCode code) {
-        return switch (code) {
-            case VALIDATION_FAILED, MALFORMED_REQUEST -> 400;
-            case UNAUTHENTICATED, INVALID_CREDENTIALS, SECURITY_SIGNATURE_INVALID -> 401;
-            case SCOPE_VIOLATION, NO_PERMISSION, ORGANIZATION_NOT_ACTIVE -> 403;
-            case NOT_FOUND -> 404;
-            case ALREADY_EXISTS, TRANSITION_NOT_ALLOWED -> 409;
-            default -> 500;
-        };
+        if (code == ErrorCode.VALIDATION_FAILED || code == ErrorCode.MALFORMED_REQUEST) {
+            return 400;
+        }
+        if (code == ErrorCode.UNAUTHENTICATED
+            || code == ErrorCode.INVALID_CREDENTIALS
+            || code == ErrorCode.SECURITY_SIGNATURE_INVALID) {
+            return 401;
+        }
+        if (code == ErrorCode.SCOPE_VIOLATION
+            || code == ErrorCode.NO_PERMISSION
+            || code == ErrorCode.ORGANIZATION_NOT_ACTIVE) {
+            return 403;
+        }
+        if (code == ErrorCode.NOT_FOUND) {
+            return 404;
+        }
+        if (code == ErrorCode.ALREADY_EXISTS || code == ErrorCode.TRANSITION_NOT_ALLOWED) {
+            return 409;
+        }
+        return 500;
     }
 
     private static String effectiveRequestId(String requestId) {
