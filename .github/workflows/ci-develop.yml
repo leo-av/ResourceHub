@@ -1,0 +1,56 @@
+# ==============================================================================
+# ResourceHub — Workflow CI/CD de Preproducción (`develop`, DEC-099)
+# ==============================================================================
+# `develop` es el entorno estable de PREPRODUCCIÓN.
+# Tras integrar cualquier PR en `develop`, este workflow ejecuta todas las
+# puertas de calidad y genera el artefacto reproducible de Preproducción con
+# manifiesto de versión y checksums SHA-256 (`retention-days: 5`, coste $0.00),
+# paso obligatorio previo a promover `develop -> main` (Producción).
+# ==============================================================================
+name: CI/CD — Develop (Preproduction) Verification & Artifact
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-develop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-package-preprod:
+    name: Preproduction Verify & Package Artifact (Java 21)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v7
+
+      - name: 2. Set up OpenJDK 21 LTS (Temurin) with Maven Cache
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 3. Gate — Security & Secret Scan
+        run: ./scripts/security-scan.sh
+
+      - name: 4. Verify all Quality Gates (Preproduction)
+        run: ./scripts/dev.sh verify
+
+      - name: 5. Package Reproducible Preproduction Artifact & SHA-256 Checksums
+        run: ./scripts/dev.sh package
+
+      - name: 6. Upload Preproduction Distribution (5-day retention for Free Quota)
+        uses: actions/upload-artifact@v7
+        with:
+          name: resourcehub-preprod-dist-${{ github.sha }}
+          path: target/dist/
+          retention-days: 5
+          if-no-files-found: error

@@ -120,11 +120,14 @@ case "${CMD}" in
     package)
         "${PROJECT_ROOT}/scripts/package-artifact.sh"
         ;;
+    check-branch-flow)
+        "${PROJECT_ROOT}/scripts/validate-branch-flow.sh" "${2:-}" "${3:-}"
+        ;;
     clean)
         ./mvnw -B clean
         ;;
     *)
-        echo "Uso: $0 {check-tools|setup|db-ping|compile|test|lint|verify|package|clean}"
+        echo "Uso: $0 {check-tools|setup|db-ping|compile|test|lint|verify|package|check-branch-flow|clean}"
         exit 1
         ;;
 esac

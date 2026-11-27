@@ -1,11 +1,12 @@
 # ==============================================================================
-# ResourceHub — Workflow CI/CD de Rama Principal `main` (Fases 6 y 7)
+# ResourceHub — Workflow CI/CD de Producción (`main` y tags `v*`, DEC-099)
 # ==============================================================================
+# `main` es el entorno estable de PRODUCCIÓN. Solo recibe promociones desde
+# `develop` (Preproducción validada) o correcciones urgentes `hotfix/*`.
 # Ejecuta la verificación completa tras integrar en `main` y genera el artefacto
-# reproducible con su manifiesto de versión y checksum `SHA-256` (`retention-days: 5`
-# para mantenerse siempre dentro de los 500 MB gratuitos de GitHub Free).
+# reproducible de Producción con manifiesto y checksums `SHA-256` (`retention-days: 5`).
 # ==============================================================================
-name: CI/CD — Main Verification & Reproducible Artifact
+name: CI/CD — Main (Production) Verification & Reproducible Artifact
 
 on:
   push:
@@ -23,7 +24,7 @@ concurrency:
 
 jobs:
   verify-and-package:
-    name: Verify & Package Reproducible Artifact (Java 21)
+    name: Production Verify & Package Reproducible Artifact (Java 21)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -38,16 +39,19 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: 3. Verify all Quality Gates
+      - name: 3. Gate — Security & Secret Scan
+        run: ./scripts/security-scan.sh
+
+      - name: 4. Verify all Quality Gates (Production)
         run: ./scripts/dev.sh verify
 
-      - name: 4. Package Reproducible Artifact & SHA-256 Checksums
+      - name: 5. Package Reproducible Production Artifact & SHA-256 Checksums
         run: ./scripts/dev.sh package
 
-      - name: 5. Upload Reproducible Distribution (5-day retention for Free Quota)
+      - name: 6. Upload Production Distribution (5-day retention for Free Quota)
         uses: actions/upload-artifact@v7
         with:
-          name: resourcehub-dist-${{ github.sha }}
+          name: resourcehub-prod-dist-${{ github.sha }}
           path: target/dist/
           retention-days: 5
           if-no-files-found: error
