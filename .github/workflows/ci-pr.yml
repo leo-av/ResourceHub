@@ -1,17 +1,20 @@
 # ==============================================================================
-# ResourceHub — Workflow CI de Pull Request (Fase 6 — Coste Cero $0.00)
+# ResourceHub — Workflow CI de Pull Request (Fase 6 + DEC-099 — Coste Cero $0.00)
 # ==============================================================================
-# Reglas de seguridad y economía:
+# Reglas de seguridad, flujo de ramas y economía:
 #   - Permisos mínimos: `contents: read`.
+#   - Se ejecuta en PRs hacia `develop` (Preproducción) y `main` (Producción).
+#   - Bloquea automáticamente cualquier PR hacia `main` que no provenga de `develop`
+#     o de `hotfix/*` (`scripts/validate-branch-flow.sh`).
 #   - Cancela ejecuciones previas en la misma rama (`cancel-in-progress: true`).
 #   - NO se conecta a la BD de desarrollo en Neon ni requiere secretos en GitHub.
-#   - Todas las acciones fijadas a versión explícita.
 # ==============================================================================
 name: CI — Pull Request Quality Gates
 
 on:
   pull_request:
     branches:
+      - develop
       - main
 
 permissions:
@@ -31,15 +34,18 @@ jobs:
       - name: 1. Checkout repository
         uses: actions/checkout@v7
 
-      - name: 2. Set up OpenJDK 21 LTS (Temurin) with Maven Cache
+      - name: 2. Gate — Branch Flow Policy (feature/* -> develop -> main | hotfix/* -> main)
+        run: ./scripts/validate-branch-flow.sh "${{ github.base_ref }}" "${{ github.head_ref }}"
+
+      - name: 3. Set up OpenJDK 21 LTS (Temurin) with Maven Cache
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
-      - name: 3. Gate — Security & Secret Scan
+      - name: 4. Gate — Security & Secret Scan
         run: ./scripts/security-scan.sh
 
-      - name: 4. Gate — Static Analysis (Checkstyle) & Build Verification
+      - name: 5. Gate — Static Analysis (Checkstyle) & Build Verification
         run: ./scripts/dev.sh verify
