@@ -3,6 +3,7 @@ package app.resourcehub.traceability;
 import app.resourcehub.traceability.api.A;
 import app.resourcehub.traceability.business.B;
 import app.resourcehub.traceability.repository.R;
+import javax.sql.DataSource;
 
 public final class XF {
 
@@ -12,6 +13,12 @@ public final class XF {
 
     public static void init() {
         R.init();
+        B.init();
+        A.init();
+    }
+
+    public static void init(DataSource dataSource) {
+        R.init(dataSource);
         B.init();
         A.init();
     }
