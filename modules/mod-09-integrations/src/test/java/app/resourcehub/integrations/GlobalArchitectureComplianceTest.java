@@ -403,6 +403,49 @@ class GlobalArchitectureComplianceTest {
         }
     }
 
+    @Test
+    @DisplayName("TT-021 [PRU-02] — Regla 7 CI: AuditLogBusiness debe exigir @AutonomousTransaction (ADR-012) y aislarse")
+    void shouldEnforceRule7AutonomousTransactionOnAuditLogBusiness() {
+        checkAutonomousAuditRule(allMainClasses);
+
+        JavaClasses violatingClasses = new ClassFileImporter()
+                .importClasses(ViolatingNonAutonomousAuditLogBusiness.class);
+        assertThatThrownBy(() -> checkAutonomousAuditRule(violatingClasses))
+                .isInstanceOf(AssertionError.class);
+    }
+
+    private static void checkAutonomousAuditRule(JavaClasses classesToCheck) {
+        classes().that().haveSimpleNameEndingWith("AuditLogBusiness")
+                .should(new ArchCondition<>(
+                        "annotate all public record* methods with @AutonomousTransaction (ADR-012)") {
+                    @Override
+                    public void check(JavaClass javaClass, ConditionEvents events) {
+                        boolean hasRecordMethod = false;
+                        for (JavaMethod method : javaClass.getMethods()) {
+                            if (method.getName().startsWith("record")) {
+                                hasRecordMethod = true;
+                                boolean annotated = method.isAnnotatedWith(
+                                        "app.resourcehub.traceability.business.structs.AutonomousTransaction");
+                                if (!annotated) {
+                                    events.add(SimpleConditionEvent.violated(
+                                            javaClass,
+                                            javaClass.getName() + "." + method.getName()
+                                                    + " must declare @AutonomousTransaction (REQUIRES_NEW, ADR-012)"));
+                                }
+                            }
+                        }
+                        if (!hasRecordMethod) {
+                            events.add(SimpleConditionEvent.violated(
+                                    javaClass,
+                                    javaClass.getName()
+                                            + " must expose at least one record* method annotated with"
+                                            + " @AutonomousTransaction"));
+                        }
+                    }
+                })
+                .check(classesToCheck);
+    }
+
     private static Path resolveRepoRoot() {
         Path current = Path.of("").toAbsolutePath();
         while (current != null) {
@@ -424,6 +467,13 @@ class GlobalArchitectureComplianceTest {
         @SuppressWarnings("unused")
         String email() {
             return email;
+        }
+    }
+
+    private static final class ViolatingNonAutonomousAuditLogBusiness {
+        @SuppressWarnings("unused")
+        public void recordWithoutAutonomousAnnotation() {
+            // Violación intencionada para prueba negativa Regla 7 CI
         }
     }
 }

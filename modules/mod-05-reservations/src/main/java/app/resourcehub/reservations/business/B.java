@@ -31,12 +31,22 @@ public final class B {
             app.resourcehub.availability.business.B::rules,
             catalogLookup
         );
+        java.util.function.Supplier<app.resourcehub.traceability.business.logic.instance.ReservationHistoryBusiness>
+            historySupplier = () -> app.resourcehub.traceability.business.B.isInitialized()
+                ? app.resourcehub.traceability.business.B.history()
+                : null;
+        java.util.function.Supplier<app.resourcehub.traceability.business.logic.instance.AuditLogBusiness>
+            auditSupplier = () -> app.resourcehub.traceability.business.B.isInitialized()
+                ? app.resourcehub.traceability.business.B.audit()
+                : null;
         reservationBusiness = new ReservationBusiness(
             R.reservations(),
             app.resourcehub.availability.business.B::schedules,
             app.resourcehub.availability.business.B::rules,
             catalogLookup,
-            effectiveClock
+            effectiveClock,
+            historySupplier,
+            auditSupplier
         );
     }
 
