@@ -1,5 +1,7 @@
 package app.resourcehub.availability.api.logic.services;
 
+import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
+import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.availability.business.B;
 import app.resourcehub.availability.business.structs.AvailabilityBusinessException;
 import app.resourcehub.availability.business.structs.CalendarException;
@@ -12,7 +14,6 @@ import app.resourcehub.shared.api.structs.InternalProblem;
 import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
-import app.resourcehub.shared.business.structs.OperationalScope;
 import app.resourcehub.shared.business.structs.OrganizationContext;
 import app.resourcehub.shared.business.structs.SharedDomainException;
 import java.net.URI;
@@ -21,6 +22,8 @@ import java.util.List;
 import java.util.UUID;
 
 public class ConsoleAvailabilityService {
+
+    private static final AuthorizationBusiness DEFAULT_AUTHZ = new AuthorizationBusiness();
 
     public ResponseWrapper<List<RecurringScheduleSlot>> replaceWeeklySchedule(
         ActorContext actor,
@@ -116,6 +119,26 @@ public class ConsoleAvailabilityService {
         return ResponseWrapper.ok("OK", released, effectiveRequestId(requestId), effectiveClock(clock).instant());
     }
 
+    public ResponseWrapper<TemporalBlock> registerWorkspaceSelfBlock(
+        ActorContext actor,
+        UUID resourceId,
+        CreateTemporalBlockCommand command,
+        String requestId,
+        Clock clock
+    ) {
+        if (command == null) {
+            throw new AvailabilityBusinessException(ErrorCode.VALIDATION_FAILED, "Request body must not be null");
+        }
+        TemporalBlock created = B.rules().registerWorkspaceSelfBlock(
+            actor,
+            resourceId,
+            command.startAt(),
+            command.endAt(),
+            command.reason()
+        );
+        return ResponseWrapper.ok("OK", created, effectiveRequestId(requestId), effectiveClock(clock).instant());
+    }
+
     public InternalProblem toInternalProblem(SharedDomainException ex, String instancePath, String requestId) {
         ErrorCode code = ex.getErrorCode();
         int httpStatus = mapHttpStatus(code);
@@ -135,15 +158,13 @@ public class ConsoleAvailabilityService {
     }
 
     private static void requireConsoleManagement(ActorContext actor) {
-        if (actor == null) {
-            throw new AvailabilityBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
-        }
-        if (actor.operationalScope() != OperationalScope.AMB_03_MANAGEMENT
-            || (!"AD".equals(actor.actorRole()) && !"MG".equals(actor.actorRole()))) {
-            throw new AvailabilityBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "Console availability requires AMB_03_MANAGEMENT with role AD or MG"
-            );
+        AuthorizationBusiness authz = app.resourcehub.access.business.B.isInitialized()
+            ? app.resourcehub.access.business.B.authorization()
+            : DEFAULT_AUTHZ;
+        try {
+            authz.assertConsoleOperation(actor, false);
+        } catch (AccessBusinessException ex) {
+            throw new AvailabilityBusinessException(ex.getErrorCode(), ex.getMessage());
         }
     }
 

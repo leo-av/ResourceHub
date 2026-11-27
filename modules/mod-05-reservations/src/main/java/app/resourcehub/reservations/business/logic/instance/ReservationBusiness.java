@@ -1,5 +1,7 @@
 package app.resourcehub.reservations.business.logic.instance;
 
+import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
+import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.availability.business.logic.instance.AvailabilityRulesBusiness;
 import app.resourcehub.availability.business.logic.instance.ScheduleBusiness;
 import app.resourcehub.reservations.business.structs.CreateReservationCommand;
@@ -40,6 +42,7 @@ import java.util.function.Supplier;
 public class ReservationBusiness {
 
     private static final int MAX_PAGE_SIZE = 100;
+    private static final AuthorizationBusiness DEFAULT_AUTHZ = new AuthorizationBusiness();
     private static final String DEFAULT_CURRENCY = "EUR";
     private static final String LINE_STATUS_ACTIVE = "ACTIVE";
     private static final String PAYMENT_SIN_CARGO = "SIN_CARGO";
@@ -158,19 +161,14 @@ public class ReservationBusiness {
         CreateReservationCommand command,
         OrganizationContext orgContext
     ) {
-        requireClientScope(actor);
+        assertDomainScopeAndHolder(actor, OperationalScope.AMB_01_CLIENT, null);
         if (command == null || command.resourceId() == null || orgContext == null) {
             throw new ReservationsBusinessException(
                 ErrorCode.VALIDATION_FAILED,
                 "command, resourceId and orgContext must not be null"
             );
         }
-        if (command.requestedHolderId() != null && !command.requestedHolderId().equals(actor.userId())) {
-            throw new ReservationsBusinessException(
-                ErrorCode.NO_PERMISSION,
-                "Client scope must match requesterId and holderId"
-            );
-        }
+        assertDomainScopeAndHolder(actor, OperationalScope.AMB_01_CLIENT, command.requestedHolderId());
         int units = command.requestedUnits() == null ? 1 : command.requestedUnits();
         if (units != 1) {
             throw new ReservationsBusinessException(
@@ -313,7 +311,11 @@ public class ReservationBusiness {
         OrganizationContext orgContext,
         AtomicReference<Reservation> beforeRef
     ) {
-        requireClientScope(actor);
+        if (actor != null && actor.operationalScope() == OperationalScope.AMB_03_MANAGEMENT) {
+            assertDomainScopeAndHolder(actor, OperationalScope.AMB_03_MANAGEMENT, null);
+        } else {
+            assertDomainScopeAndHolder(actor, OperationalScope.AMB_01_CLIENT, null);
+        }
         if (reservationId == null || command == null || command.resourceId() == null || orgContext == null) {
             throw new ReservationsBusinessException(
                 ErrorCode.VALIDATION_FAILED,
@@ -330,8 +332,15 @@ public class ReservationBusiness {
 
         StoredReservationAggregate existing = reservationRepository.findById(reservationId)
             .orElseThrow(() -> new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found"));
-        if (!existing.reservation().holderId().equals(actor.userId())) {
+        if (actor.operationalScope() == OperationalScope.AMB_01_CLIENT
+            && !existing.reservation().holderId().equals(actor.userId())) {
+            if ("AD".equals(actor.actorRole()) || "MG".equals(actor.actorRole())) {
+                assertDomainScopeAndHolder(actor, OperationalScope.AMB_01_CLIENT, existing.reservation().holderId());
+            }
             throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
+        }
+        if (actor.operationalScope() == OperationalScope.AMB_03_MANAGEMENT) {
+            assertDomainScopeAndHolder(actor, OperationalScope.AMB_03_MANAGEMENT, existing.reservation().holderId());
         }
         beforeRef.set(mapToDomain(existing));
         ReservationStatus currentStatus = ReservationStatus.valueOf(existing.reservation().status());
@@ -463,7 +472,13 @@ public class ReservationBusiness {
             .orElseThrow(() -> new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found"));
         if (actor.operationalScope() == OperationalScope.AMB_01_CLIENT
             && !existing.reservation().holderId().equals(actor.userId())) {
+            if ("AD".equals(actor.actorRole()) || "MG".equals(actor.actorRole())) {
+                assertDomainScopeAndHolder(actor, OperationalScope.AMB_01_CLIENT, existing.reservation().holderId());
+            }
             throw new ReservationsBusinessException(ErrorCode.NOT_FOUND, "Reservation not found");
+        }
+        if (actor.operationalScope() == OperationalScope.AMB_03_MANAGEMENT) {
+            assertDomainScopeAndHolder(actor, OperationalScope.AMB_03_MANAGEMENT, existing.reservation().holderId());
         }
         holderRef.set(existing.reservation().holderId());
         beforeRef.set(mapToDomain(existing));
@@ -531,17 +546,7 @@ public class ReservationBusiness {
         Instant from,
         Instant to
     ) {
-        if (actor == null) {
-            throw new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
-        }
-        if (actor.operationalScope() != OperationalScope.AMB_02_PROFESSIONAL
-            || "US".equals(actor.actorRole())
-            || actor.linkedPersonResourceId() == null) {
-            throw new ReservationsBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "Workspace agenda requires AMB_02_PROFESSIONAL with linked PERSON resource"
-            );
-        }
+        assertDomainScopeAndHolder(actor, OperationalScope.AMB_02_PROFESSIONAL, null);
         if ((from == null) != (to == null) || (from != null && !from.isBefore(to))) {
             throw new ReservationsBusinessException(
                 ErrorCode.VALIDATION_FAILED,
@@ -579,6 +584,14 @@ public class ReservationBusiness {
             to,
             items
         );
+    }
+
+    public void assertWorkspaceSessionAccess(ActorContext actor, UUID targetPersonResourceId) {
+        try {
+            authorization().assertWorkspaceResourceAccess(actor, targetPersonResourceId);
+        } catch (AccessBusinessException ex) {
+            throw new ReservationsBusinessException(ex.getErrorCode(), ex.getMessage());
+        }
     }
 
     private void validateSlotBookable(CatalogResource resource, TimeInterval slot, OrganizationContext orgContext) {
@@ -628,15 +641,25 @@ public class ReservationBusiness {
     }
 
     private static void requireClientScope(ActorContext actor) {
-        if (actor == null) {
-            throw new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
+        assertDomainScopeAndHolder(actor, OperationalScope.AMB_01_CLIENT, null);
+    }
+
+    private static void assertDomainScopeAndHolder(
+        ActorContext actor,
+        OperationalScope requiredScope,
+        UUID targetHolderId
+    ) {
+        try {
+            authorization().assertScopeAndHolder(actor, requiredScope, targetHolderId);
+        } catch (AccessBusinessException ex) {
+            throw new ReservationsBusinessException(ex.getErrorCode(), ex.getMessage());
         }
-        if (actor.operationalScope() != OperationalScope.AMB_01_CLIENT) {
-            throw new ReservationsBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "App reservations endpoint requires AMB_01_CLIENT operational scope"
-            );
-        }
+    }
+
+    private static AuthorizationBusiness authorization() {
+        return app.resourcehub.access.business.B.isInitialized()
+            ? app.resourcehub.access.business.B.authorization()
+            : DEFAULT_AUTHZ;
     }
 
     private static boolean isCoveredByWindows(List<TimeInterval> windows, TimeInterval target) {

@@ -86,6 +86,10 @@ public final class B {
         return authBusiness;
     }
 
+    public static boolean isInitialized() {
+        return authorizationBusiness != null;
+    }
+
     public static AuthorizationBusiness authorization() {
         if (authorizationBusiness == null) {
             throw new IllegalStateException("B.init() has not been called");

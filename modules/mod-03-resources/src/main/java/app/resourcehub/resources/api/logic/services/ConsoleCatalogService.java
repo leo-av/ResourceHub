@@ -1,5 +1,7 @@
 package app.resourcehub.resources.api.logic.services;
 
+import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
+import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.resources.business.B;
 import app.resourcehub.resources.business.structs.CatalogPage;
 import app.resourcehub.resources.business.structs.CatalogResource;
@@ -13,7 +15,6 @@ import app.resourcehub.shared.api.structs.PageResponse;
 import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
-import app.resourcehub.shared.business.structs.OperationalScope;
 import app.resourcehub.shared.business.structs.ResourceNature;
 import java.net.URI;
 import java.time.Clock;
@@ -21,6 +22,8 @@ import java.util.List;
 import java.util.UUID;
 
 public class ConsoleCatalogService {
+
+    private static final AuthorizationBusiness DEFAULT_AUTHZ = new AuthorizationBusiness();
 
     public ResponseWrapper<ResourceType> createResourceType(
         ActorContext actor,
@@ -138,15 +141,13 @@ public class ConsoleCatalogService {
     }
 
     private static void requireConsoleManagement(ActorContext actor) {
-        if (actor == null) {
-            throw new ResourcesBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
-        }
-        if (actor.operationalScope() != OperationalScope.AMB_03_MANAGEMENT
-            || (!"AD".equals(actor.actorRole()) && !"MG".equals(actor.actorRole()))) {
-            throw new ResourcesBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "Console catalog requires AMB_03_MANAGEMENT with role AD or MG"
-            );
+        AuthorizationBusiness authz = app.resourcehub.access.business.B.isInitialized()
+            ? app.resourcehub.access.business.B.authorization()
+            : DEFAULT_AUTHZ;
+        try {
+            authz.assertConsoleOperation(actor, false);
+        } catch (AccessBusinessException ex) {
+            throw new ResourcesBusinessException(ex.getErrorCode(), ex.getMessage());
         }
     }
 

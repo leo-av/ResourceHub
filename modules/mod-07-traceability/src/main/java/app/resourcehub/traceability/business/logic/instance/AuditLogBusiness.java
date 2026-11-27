@@ -1,5 +1,8 @@
 package app.resourcehub.traceability.business.logic.instance;
 
+import app.resourcehub.access.business.B;
+import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
+import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ActorType;
 import app.resourcehub.shared.business.structs.ErrorCode;
@@ -28,6 +31,7 @@ import java.util.function.Function;
 public class AuditLogBusiness {
 
     private static final int MAX_PAGE_SIZE = 100;
+    private static final AuthorizationBusiness DEFAULT_AUTHZ = new AuthorizationBusiness();
 
     private final AuditLogRepository auditLogRepository;
     private final Clock clock;
@@ -104,15 +108,11 @@ public class AuditLogBusiness {
     }
 
     public AuditLogPage listAuditLogs(ActorContext actor, AuditLogFilter filter, int page, int size) {
-        if (actor == null) {
-            throw new TraceabilityBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
-        }
-        if (actor.operationalScope() != OperationalScope.AMB_03_MANAGEMENT
-            || (!"AD".equals(actor.actorRole()) && !"MG".equals(actor.actorRole()))) {
-            throw new TraceabilityBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "Console audit logs endpoint requires AMB_03_MANAGEMENT with role AD or MG"
-            );
+        AuthorizationBusiness authz = B.isInitialized() ? B.authorization() : DEFAULT_AUTHZ;
+        try {
+            authz.assertConsoleOperation(actor, false);
+        } catch (AccessBusinessException ex) {
+            throw new TraceabilityBusinessException(ex.getErrorCode(), ex.getMessage());
         }
         if (page < 1 || size < 1 || size > MAX_PAGE_SIZE) {
             throw new TraceabilityBusinessException(
