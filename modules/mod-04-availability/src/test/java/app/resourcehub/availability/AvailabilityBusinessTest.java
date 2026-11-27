@@ -405,6 +405,16 @@ class AvailabilityBusinessTest {
             .isInstanceOf(AvailabilityBusinessException.class);
         assertThatThrownBy(() -> rulesBusiness.evaluateOpenWindows(RESOURCE_ID, range, null))
             .isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.hasActiveBlockOverlapping(null, range))
+            .isInstanceOf(AvailabilityBusinessException.class);
+        assertThatThrownBy(() -> rulesBusiness.hasActiveBlockOverlapping(RESOURCE_ID, null))
+            .isInstanceOf(AvailabilityBusinessException.class);
+        TimeInterval futureRange = new TimeInterval(t2, t2.plusSeconds(3600));
+        assertThat(rulesBusiness.hasActiveBlockOverlapping(RESOURCE_ID, futureRange)).isFalse();
+        rulesBusiness.registerBlock(
+            RESOURCE_ID, BlockOrigin.MAINTENANCE, futureRange.startAt(), futureRange.endAt(), false, null, "Blq", null
+        );
+        assertThat(rulesBusiness.hasActiveBlockOverlapping(RESOURCE_ID, futureRange)).isTrue();
     }
 
     private static CatalogResource sampleResource(UUID id, ResourceStatus status) {

@@ -125,6 +125,47 @@ public class ReservationRepository extends PostgresRepository {
         }, "ReservationRepository.findByHolderId");
     }
 
+    public List<StoredReservationAggregate> findAggregatesByHolderId(UUID holderId, int limit, int offset) {
+        List<StoredReservation> headers = findByHolderId(holderId, limit, offset);
+        if (headers.isEmpty()) {
+            return List.of();
+        }
+        String linesSql = "SELECT " + LINE_COLUMNS + """
+            FROM reservations.reservation_line
+            WHERE reservation_id = ANY(?)
+            ORDER BY reservation_id ASC, line_number ASC, id ASC
+            """;
+        java.util.Map<UUID, List<StoredReservationLine>> linesByReservation = new java.util.LinkedHashMap<>();
+        for (StoredReservation header : headers) {
+            linesByReservation.put(header.id(), new ArrayList<>());
+        }
+        UUID[] ids = headers.stream().map(StoredReservation::id).toArray(UUID[]::new);
+        executeWithConnection(conn -> {
+            java.sql.Array sqlIds = conn.createArrayOf("uuid", ids);
+            try (PreparedStatement ps = conn.prepareStatement(linesSql)) {
+                ps.setArray(1, sqlIds);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        StoredReservationLine line = mapLine(rs);
+                        List<StoredReservationLine> bucket = linesByReservation.get(line.reservationId());
+                        if (bucket != null) {
+                            bucket.add(line);
+                        }
+                    }
+                }
+            } finally {
+                sqlIds.free();
+            }
+            return null;
+        }, "ReservationRepository.findAggregatesByHolderId");
+
+        List<StoredReservationAggregate> aggregates = new ArrayList<>(headers.size());
+        for (StoredReservation header : headers) {
+            aggregates.add(new StoredReservationAggregate(header, List.copyOf(linesByReservation.get(header.id()))));
+        }
+        return aggregates;
+    }
+
     public long countByHolderId(UUID holderId) {
         String sql = "SELECT COUNT(*) FROM reservations.reservation WHERE holder_id = ?";
         return executeWithConnection(conn -> {
