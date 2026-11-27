@@ -157,6 +157,168 @@ class AuthorizationBusinessTest {
         ).getErrorCode()).isEqualTo(ErrorCode.NO_PERMISSION);
     }
 
+    @Test
+    @DisplayName("TT-027 [PRU-01 / AC-021] — Guardia assertScopeAndHolder (AMB-01, AMB-02 PERSON, AMB-03 MG vs AD)")
+    void shouldEnforceScopeAndHolderAc021AndManagerVsAdminMatrix() {
+        AuthorizationBusiness authz = new AuthorizationBusiness();
+        UUID gm1UserId = UUID.fromString("01936c00-0000-7000-8000-000000000101");
+        UUID us2UserId = UUID.fromString("01936c00-0000-7000-8000-000000000102");
+        UUID em2UserId = UUID.fromString("01936c00-0000-7000-8000-000000000103");
+        UUID em1PersonRes = UUID.fromString("01936c00-0010-7000-8000-000000000201");
+        UUID em2PersonRes = UUID.fromString("01936c00-0010-7000-8000-000000000202");
+        UUID salaRes = UUID.fromString("01936c00-0010-7000-8000-000000000203");
+
+        ActorContext gm1App = new ActorContext(
+            gm1UserId, ORG_DEFAULT, ActorType.USER, "MG", OperationalScope.AMB_01_CLIENT, em1PersonRes, Set.of()
+        );
+        ActorContext adApp = new ActorContext(
+            gm1UserId, ORG_DEFAULT, ActorType.USER, "AD", OperationalScope.AMB_01_CLIENT, null, Set.of()
+        );
+        ActorContext gm1Console = new ActorContext(
+            gm1UserId, ORG_DEFAULT, ActorType.USER, "MG", OperationalScope.AMB_03_MANAGEMENT, em1PersonRes, Set.of()
+        );
+        ActorContext adConsole = new ActorContext(
+            gm1UserId, ORG_DEFAULT, ActorType.USER, "AD", OperationalScope.AMB_03_MANAGEMENT, null, Set.of()
+        );
+        ActorContext em2Workspace = new ActorContext(
+            em2UserId, ORG_DEFAULT, ActorType.USER, "EM", OperationalScope.AMB_02_PROFESSIONAL, em2PersonRes, Set.of()
+        );
+
+        // AC-021(a): En AMB-01 (/app), incluso MG o AD solo pueden operar si holder == requester; contra US2 -> NO_PERMISSION (200004)
+        assertThatCode(() -> authz.assertScopeAndHolder(gm1App, OperationalScope.AMB_01_CLIENT, gm1UserId))
+            .doesNotThrowAnyException();
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(gm1App, OperationalScope.AMB_01_CLIENT, us2UserId),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.NO_PERMISSION);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(adApp, OperationalScope.AMB_01_CLIENT, us2UserId),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.NO_PERMISSION);
+
+        // AC-021(a): El mismo GM1 desde BackOffice (AMB-03) SÍ puede operar sobre reservas de US2
+        assertThatCode(() -> authz.assertScopeAndHolder(gm1Console, OperationalScope.AMB_03_MANAGEMENT, us2UserId))
+            .doesNotThrowAnyException();
+
+        // AC-021(b): EM2 en AMB-02 solo puede operar sobre EM2; sobre EM1 o sala reservada -> NO_PERMISSION (200004)
+        assertThatCode(() -> authz.assertWorkspaceResourceAccess(em2Workspace, em2PersonRes))
+            .doesNotThrowAnyException();
+        assertThat(catchThrowableOfType(
+            () -> authz.assertWorkspaceResourceAccess(em2Workspace, em1PersonRes),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.NO_PERMISSION);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertWorkspaceResourceAccess(em2Workspace, salaRes),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.NO_PERMISSION);
+
+        // AMB-03 Matriz MG vs [Solo AD]
+        assertThatCode(() -> authz.assertConsoleOperation(gm1Console, false)).doesNotThrowAnyException();
+        assertThat(catchThrowableOfType(
+            () -> authz.assertConsoleOperation(gm1Console, true),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.NO_PERMISSION);
+        assertThatCode(() -> authz.assertConsoleOperation(adConsole, true)).doesNotThrowAnyException();
+        assertThat(authz.canScopeAndHolder(gm1Console, OperationalScope.AMB_03_MANAGEMENT, us2UserId, true)).isFalse();
+        assertThat(authz.canScopeAndHolder(adConsole, OperationalScope.AMB_03_MANAGEMENT, us2UserId, true)).isTrue();
+    }
+
+    @Test
+    @DisplayName("TT-027 [PRU-01] — Cobertura exhaustiva de bordes de assertScopeAndHolder y assertWorkspaceResourceAccess")
+    void shouldCoverAllRemainingScopeAndHolderBranches() {
+        AuthorizationBusiness authz = new AuthorizationBusiness();
+        UUID userId = UUID.fromString("01936c00-0000-7000-8000-000000000777");
+        UUID personResId = UUID.fromString("01936c00-0010-7000-8000-000000000888");
+
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(null, OperationalScope.AMB_01_CLIENT, userId),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.UNAUTHENTICATED);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertWorkspaceResourceAccess(null, personResId),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.UNAUTHENTICATED);
+
+        ActorContext usClient = actor(ORG_DEFAULT, ActorType.USER, "US", OperationalScope.AMB_01_CLIENT);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(usClient, null, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertWorkspaceResourceAccess(usClient, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        // PLATFORM scope
+        ActorContext pa = actor(null, ActorType.PLATFORM_ADMIN, "PA", OperationalScope.PLATFORM);
+        ActorContext paWrongRole = actor(null, ActorType.PLATFORM_ADMIN, "AD", OperationalScope.PLATFORM);
+        ActorContext paWrongScope = actor(null, ActorType.PLATFORM_ADMIN, "PA", OperationalScope.AMB_03_MANAGEMENT);
+        ActorContext nonPaOnPlatform = actor(ORG_DEFAULT, ActorType.USER, "PA", OperationalScope.PLATFORM);
+        assertThatCode(() -> authz.assertScopeAndHolder(pa, OperationalScope.PLATFORM, null))
+            .doesNotThrowAnyException();
+        for (ActorContext invalidPa : List.of(paWrongRole, paWrongScope, nonPaOnPlatform)) {
+            assertThat(catchThrowableOfType(
+                () -> authz.assertScopeAndHolder(invalidPa, OperationalScope.PLATFORM, null),
+                AccessBusinessException.class
+            ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        }
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(pa, OperationalScope.AMB_01_CLIENT, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(usClient, OperationalScope.AMB_03_MANAGEMENT, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // AMB-01 sin targetHolderId
+        assertThatCode(() -> authz.assertScopeAndHolder(usClient, OperationalScope.AMB_01_CLIENT, null))
+            .doesNotThrowAnyException();
+
+        // AMB-02 edge cases: rol US en AMB-02, linkedPersonId == null, null targetHolderId
+        ActorContext usWorkspace = new ActorContext(
+            userId, ORG_DEFAULT, ActorType.USER, "US", OperationalScope.AMB_02_PROFESSIONAL, personResId, Set.of()
+        );
+        ActorContext emWorkspaceNoLink = new ActorContext(
+            userId, ORG_DEFAULT, ActorType.USER, "EM", OperationalScope.AMB_02_PROFESSIONAL, null, Set.of()
+        );
+        ActorContext emWorkspaceValid = new ActorContext(
+            userId, ORG_DEFAULT, ActorType.USER, "EM", OperationalScope.AMB_02_PROFESSIONAL, personResId, Set.of()
+        );
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(usWorkspace, OperationalScope.AMB_02_PROFESSIONAL, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(emWorkspaceNoLink, OperationalScope.AMB_02_PROFESSIONAL, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThatCode(() -> authz.assertScopeAndHolder(emWorkspaceValid, OperationalScope.AMB_02_PROFESSIONAL, null))
+            .doesNotThrowAnyException();
+
+        // AMB-03 rol no autorizado
+        ActorContext usConsole = actor(ORG_DEFAULT, ActorType.USER, "US", OperationalScope.AMB_03_MANAGEMENT);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(usConsole, OperationalScope.AMB_03_MANAGEMENT, null, false),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+
+        // EXTERNAL_CLIENT & SYSTEM scopes
+        ActorContext extActor = actor(ORG_DEFAULT, ActorType.EXTERNAL_CLIENT, "M2M", OperationalScope.EXTERNAL_CLIENT);
+        ActorContext nonExtInExt = actor(ORG_DEFAULT, ActorType.USER, "M2M", OperationalScope.EXTERNAL_CLIENT);
+        ActorContext sysActor = actor(ORG_DEFAULT, ActorType.SYSTEM, "SYS", OperationalScope.SYSTEM);
+        assertThatCode(() -> authz.assertScopeAndHolder(extActor, OperationalScope.EXTERNAL_CLIENT, null))
+            .doesNotThrowAnyException();
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(nonExtInExt, OperationalScope.EXTERNAL_CLIENT, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThat(catchThrowableOfType(
+            () -> authz.assertScopeAndHolder(sysActor, OperationalScope.SYSTEM, null),
+            AccessBusinessException.class
+        ).getErrorCode()).isEqualTo(ErrorCode.SCOPE_VIOLATION);
+    }
+
     private static boolean isExpectedAllowed(
         UserRole role,
         OperationalScope scope,

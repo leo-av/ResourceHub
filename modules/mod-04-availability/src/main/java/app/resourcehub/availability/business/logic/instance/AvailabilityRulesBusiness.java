@@ -1,5 +1,7 @@
 package app.resourcehub.availability.business.logic.instance;
 
+import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
+import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.availability.business.structs.AvailabilityBusinessException;
 import app.resourcehub.availability.business.structs.BlockOrigin;
 import app.resourcehub.availability.business.structs.CalendarException;
@@ -12,6 +14,7 @@ import app.resourcehub.availability.repository.structs.StoredCalendarException;
 import app.resourcehub.availability.repository.structs.StoredTemporalBlock;
 import app.resourcehub.resources.business.structs.CatalogResource;
 import app.resourcehub.resources.business.structs.ResourceStatus;
+import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import app.resourcehub.shared.business.structs.OrganizationContext;
 import app.resourcehub.shared.business.structs.TimeInterval;
@@ -216,6 +219,24 @@ public class AvailabilityRulesBusiness {
             }
             throw ex;
         }
+    }
+
+    public TemporalBlock registerWorkspaceSelfBlock(
+        ActorContext actor,
+        UUID resourceId,
+        Instant startAt,
+        Instant endAt,
+        String reason
+    ) {
+        AuthorizationBusiness authz = app.resourcehub.access.business.B.isInitialized()
+            ? app.resourcehub.access.business.B.authorization()
+            : new AuthorizationBusiness();
+        try {
+            authz.assertWorkspaceResourceAccess(actor, resourceId);
+        } catch (AccessBusinessException ex) {
+            throw new AvailabilityBusinessException(ex.getErrorCode(), ex.getMessage());
+        }
+        return registerBlock(resourceId, BlockOrigin.MANUAL, startAt, endAt, false, null, reason, actor.userId());
     }
 
     public TemporalBlock releaseBlock(UUID blockId) {

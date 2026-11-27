@@ -26,5 +26,10 @@
       <artifactId>mod-03-resources</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>app.resourcehub</groupId>
+      <artifactId>mod-02-access</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
 </project>

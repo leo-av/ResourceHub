@@ -1,13 +1,16 @@
 package app.resourcehub.reservations.api.logic.services;
 
+import app.resourcehub.access.business.logic.instance.AuthorizationBusiness;
+import app.resourcehub.access.business.structs.AccessBusinessException;
 import app.resourcehub.reservations.business.B;
+import app.resourcehub.reservations.business.structs.ModifyReservationCommand;
 import app.resourcehub.reservations.business.structs.Reservation;
 import app.resourcehub.reservations.business.structs.ReservationsBusinessException;
 import app.resourcehub.shared.api.structs.InternalProblem;
 import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
-import app.resourcehub.shared.business.structs.OperationalScope;
+import app.resourcehub.shared.business.structs.OrganizationContext;
 import app.resourcehub.shared.business.structs.SharedDomainException;
 import java.net.URI;
 import java.time.Clock;
@@ -15,6 +18,24 @@ import java.util.List;
 import java.util.UUID;
 
 public class ConsoleReservationService {
+
+    private static final AuthorizationBusiness DEFAULT_AUTHZ = new AuthorizationBusiness();
+
+    public ResponseWrapper<Reservation> modifyReservation(
+        ActorContext actor,
+        UUID reservationId,
+        ModifyReservationCommand command,
+        OrganizationContext orgContext,
+        String requestId,
+        Clock clock
+    ) {
+        requireConsoleManagement(actor);
+        String correlationId = effectiveRequestId(requestId);
+        Reservation modified = B.reservations().modifyReservation(
+            actor, reservationId, command, orgContext, correlationId
+        );
+        return ResponseWrapper.ok("OK", modified, correlationId, effectiveClock(clock).instant());
+    }
 
     public ResponseWrapper<Reservation> cancelReservation(
         ActorContext actor,
@@ -47,15 +68,13 @@ public class ConsoleReservationService {
     }
 
     private static void requireConsoleManagement(ActorContext actor) {
-        if (actor == null) {
-            throw new ReservationsBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
-        }
-        if (actor.operationalScope() != OperationalScope.AMB_03_MANAGEMENT
-            || (!"AD".equals(actor.actorRole()) && !"MG".equals(actor.actorRole()))) {
-            throw new ReservationsBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "Console reservations endpoint requires AMB_03_MANAGEMENT with role AD or MG"
-            );
+        AuthorizationBusiness authz = app.resourcehub.access.business.B.isInitialized()
+            ? app.resourcehub.access.business.B.authorization()
+            : DEFAULT_AUTHZ;
+        try {
+            authz.assertConsoleOperation(actor, false);
+        } catch (AccessBusinessException ex) {
+            throw new ReservationsBusinessException(ex.getErrorCode(), ex.getMessage());
         }
     }
 

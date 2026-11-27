@@ -915,6 +915,67 @@ class ReservationsBusinessTest {
         ).status()).isEqualTo(500);
     }
 
+    @Test
+    @DisplayName("TT-027 [AC-021] — GM1 en WebCliente (NO_PERMISSION) vs BackOffice (OK) sobre US2 y EM2 vs EM1 en Workspace")
+    void shouldEnforceAc021GymDomainGuardInReservationBusiness() {
+        Instant monday09 = Instant.parse("2026-11-30T09:00:00Z");
+        Instant monday10 = Instant.parse("2026-11-30T10:00:00Z");
+        Instant monday11 = Instant.parse("2026-11-30T11:00:00Z");
+        scheduleBusiness.replaceWeeklySchedules(
+            RESOURCE_ID,
+            List.of(new WeeklyScheduleEntry(1, LocalTime.of(8, 0), LocalTime.of(20, 0), null, null))
+        );
+
+        Reservation us2Booking = reservationBusiness.createReservation(
+            CLIENT_USER_2,
+            new CreateReservationCommand(RESOURCE_ID, monday09, monday10, 1, null),
+            MADRID_ORG
+        );
+
+        UUID gm1UserId = UUID.fromString("01936a00-0099-7000-8000-000000000101");
+        UUID em1PersonRes = UUID.fromString("01936a00-0099-7000-8000-000000000201");
+        UUID em2PersonRes = UUID.fromString("01936a00-0099-7000-8000-000000000202");
+
+        ActorContext gm1App = new ActorContext(
+            gm1UserId, ORG_ID, ActorType.USER, "MG", OperationalScope.AMB_01_CLIENT, em1PersonRes, Set.of()
+        );
+        ActorContext gm1Console = new ActorContext(
+            gm1UserId, ORG_ID, ActorType.USER, "MG", OperationalScope.AMB_03_MANAGEMENT, em1PersonRes, Set.of()
+        );
+        ActorContext em2Workspace = new ActorContext(
+            UUID.randomUUID(), ORG_ID, ActorType.USER, "EM", OperationalScope.AMB_02_PROFESSIONAL, em2PersonRes, Set.of()
+        );
+
+        // AC-021(a): GM1 en WebCliente no puede modificar ni cancelar reserva de US2 -> NO_PERMISSION (200004)
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            gm1App, us2Booking.id(), new ModifyReservationCommand(RESOURCE_ID, monday10, monday11, 1), MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NO_PERMISSION);
+
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(gm1App, us2Booking.id()))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NO_PERMISSION);
+
+        // AC-021(a): GM1 en BackOffice (AMB-03) sí modifica y cancela la reserva de US2
+        Reservation modifiedByGm1 = reservationBusiness.modifyReservation(
+            gm1Console, us2Booking.id(), new ModifyReservationCommand(RESOURCE_ID, monday10, monday11, 1), MADRID_ORG
+        );
+        assertThat(modifiedByGm1.version()).isEqualTo(2);
+
+        Reservation cancelledByGm1 = reservationBusiness.cancelReservation(gm1Console, us2Booking.id());
+        assertThat(cancelledByGm1.status()).isEqualTo(ReservationStatus.CANCELLED);
+
+        // AC-021(b): EM2 solo accede a su propio recurso PERSON y recibe NO_PERMISSION sobre EM1
+        reservationBusiness.assertWorkspaceSessionAccess(em2Workspace, em2PersonRes);
+        assertThatThrownBy(() -> reservationBusiness.assertWorkspaceSessionAccess(em2Workspace, em1PersonRes))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NO_PERMISSION);
+    }
+
     private static CatalogResource sampleResource(UUID id, ResourceStatus status) {
         return new CatalogResource(
             id,

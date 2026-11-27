@@ -11,7 +11,6 @@ import app.resourcehub.shared.api.structs.PageResponse;
 import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
-import app.resourcehub.shared.business.structs.OperationalScope;
 import java.net.URI;
 import java.time.Clock;
 import java.util.List;
@@ -91,26 +90,11 @@ public class ConsoleUserService {
     }
 
     private static void requireConsoleRead(ActorContext actor) {
-        if (actor == null) {
-            throw new AccessBusinessException(ErrorCode.UNAUTHENTICATED, "Authentication required");
-        }
-        if (actor.operationalScope() != OperationalScope.AMB_03_MANAGEMENT
-            || (!"AD".equals(actor.actorRole()) && !"MG".equals(actor.actorRole()))) {
-            throw new AccessBusinessException(
-                ErrorCode.SCOPE_VIOLATION,
-                "Console users endpoint requires AMB_03_MANAGEMENT with role AD or MG"
-            );
-        }
+        B.authorization().assertConsoleOperation(actor, false);
     }
 
     private static void requireAdminWrite(ActorContext actor) {
-        requireConsoleRead(actor);
-        if (!"AD".equals(actor.actorRole())) {
-            throw new AccessBusinessException(
-                ErrorCode.NO_PERMISSION,
-                "Write operations on /console/users require role AD"
-            );
-        }
+        B.authorization().assertConsoleOperation(actor, true);
     }
 
     private static int mapHttpStatus(ErrorCode code) {
