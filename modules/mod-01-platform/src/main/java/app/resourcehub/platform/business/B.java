@@ -1,16 +1,39 @@
 package app.resourcehub.platform.business;
 
+import app.resourcehub.platform.business.logic.instance.ErrorCatalogBusiness;
+import app.resourcehub.platform.business.logic.instance.OrganizationBusiness;
+import app.resourcehub.platform.repository.R;
+
 public final class B {
+
+    private static OrganizationBusiness organizationBusiness;
+    private static ErrorCatalogBusiness errorCatalogBusiness;
 
     private B() {
         throw new UnsupportedOperationException("Static XF business injector");
     }
 
     public static void init() {
-        // Sin componentes business activos en el esqueleto inicial de mod-01-platform.
+        organizationBusiness = new OrganizationBusiness(R.organization());
+        errorCatalogBusiness = new ErrorCatalogBusiness(R.errorCatalog());
+    }
+
+    public static OrganizationBusiness organization() {
+        if (organizationBusiness == null) {
+            throw new IllegalStateException("B.init() has not been called");
+        }
+        return organizationBusiness;
+    }
+
+    public static ErrorCatalogBusiness errorCatalog() {
+        if (errorCatalogBusiness == null) {
+            throw new IllegalStateException("B.init() has not been called");
+        }
+        return errorCatalogBusiness;
     }
 
     public static void terminate() {
-        // Sin recursos business que liberar en el esqueleto inicial de mod-01-platform.
+        organizationBusiness = null;
+        errorCatalogBusiness = null;
     }
 }

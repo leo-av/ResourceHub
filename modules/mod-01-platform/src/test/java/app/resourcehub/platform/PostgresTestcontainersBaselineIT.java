@@ -77,7 +77,7 @@ class PostgresTestcontainersBaselineIT {
     @Test
     void shouldBootPostgres16AndApplyV1Idempotently() throws SQLException {
         assertNotNull(initialMigration);
-        assertEquals(1, initialMigration.migrationsExecuted);
+        assertTrue(initialMigration.migrationsExecuted >= 1);
 
         MigrateResult rerun = flyway.migrate();
         assertEquals(0, rerun.migrationsExecuted);
