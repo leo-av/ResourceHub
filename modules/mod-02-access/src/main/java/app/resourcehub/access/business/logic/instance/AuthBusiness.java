@@ -5,15 +5,19 @@ import app.resourcehub.access.business.structs.AuthTokenBundle;
 import app.resourcehub.access.business.structs.IdentityStatus;
 import app.resourcehub.access.business.structs.UserProfile;
 import app.resourcehub.access.business.structs.UserRole;
+import app.resourcehub.access.business.structs.UserSummary;
 import app.resourcehub.access.business.utils.Argon2PasswordUtils;
 import app.resourcehub.access.business.utils.JwtTokenUtils;
 import app.resourcehub.access.repository.logic.local.LocalCredentialRepository;
+import app.resourcehub.access.repository.logic.local.PersonalDataRepository;
 import app.resourcehub.access.repository.logic.local.RefreshTokenRepository;
 import app.resourcehub.access.repository.logic.local.UserRepository;
+import app.resourcehub.access.repository.structs.AccessRepositoryException;
 import app.resourcehub.access.repository.structs.RefreshTokenRotationOutcome;
 import app.resourcehub.access.repository.structs.RefreshTokenRotationResult;
 import app.resourcehub.access.repository.structs.StoredIdentityAccount;
 import app.resourcehub.access.repository.structs.StoredLocalCredential;
+import app.resourcehub.access.repository.structs.StoredPersonalData;
 import app.resourcehub.access.repository.structs.StoredRefreshToken;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ActorType;
@@ -24,24 +28,68 @@ import java.security.KeyPair;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 public class AuthBusiness {
 
+    public static final String ANONYMIZED_USER_LABEL = "Usuario eliminado (RGPD)";
     private static final Duration ACCESS_TOKEN_TTL = Duration.ofMinutes(15);
     private static final Duration REFRESH_TOKEN_TTL = Duration.ofDays(7);
     private static final int MIN_PASSWORD_LENGTH = 8;
+    private static final int MAX_EMAIL_LENGTH = 254;
+    private static final int MAX_FULL_NAME_LENGTH = 150;
+    private static final int MAX_PHONE_LENGTH = 32;
 
     private final UserRepository userRepository;
     private final LocalCredentialRepository credentialRepository;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final PersonalDataRepository personalDataRepository;
     private final Clock clock;
     private final KeyPair signingKeyPair;
 
     public AuthBusiness(
+        UserRepository userRepository,
+        LocalCredentialRepository credentialRepository,
+        RefreshTokenRepository refreshTokenRepository,
+        Clock clock,
+        KeyPair signingKeyPair
+    ) {
+        validateDependencies(userRepository, credentialRepository, refreshTokenRepository, clock, signingKeyPair);
+        this.userRepository = userRepository;
+        this.credentialRepository = credentialRepository;
+        this.refreshTokenRepository = refreshTokenRepository;
+        this.personalDataRepository = null;
+        this.clock = clock;
+        this.signingKeyPair = signingKeyPair;
+    }
+
+    public AuthBusiness(
+        UserRepository userRepository,
+        LocalCredentialRepository credentialRepository,
+        RefreshTokenRepository refreshTokenRepository,
+        PersonalDataRepository personalDataRepository,
+        Clock clock,
+        KeyPair signingKeyPair
+    ) {
+        validateDependencies(userRepository, credentialRepository, refreshTokenRepository, clock, signingKeyPair);
+        if (personalDataRepository == null) {
+            throw new IllegalArgumentException("personalDataRepository must not be null");
+        }
+        this.userRepository = userRepository;
+        this.credentialRepository = credentialRepository;
+        this.refreshTokenRepository = refreshTokenRepository;
+        this.personalDataRepository = personalDataRepository;
+        this.clock = clock;
+        this.signingKeyPair = signingKeyPair;
+    }
+
+    private static void validateDependencies(
         UserRepository userRepository,
         LocalCredentialRepository credentialRepository,
         RefreshTokenRepository refreshTokenRepository,
@@ -63,11 +111,6 @@ public class AuthBusiness {
         if (signingKeyPair == null) {
             throw new IllegalArgumentException("signingKeyPair must not be null");
         }
-        this.userRepository = userRepository;
-        this.credentialRepository = credentialRepository;
-        this.refreshTokenRepository = refreshTokenRepository;
-        this.clock = clock;
-        this.signingKeyPair = signingKeyPair;
     }
 
     public void registerLocalCredential(UUID organizationId, UUID userId, String email, char[] rawPassword) {
@@ -82,6 +125,23 @@ public class AuthBusiness {
             );
         }
         String encodedHash = Argon2PasswordUtils.hash(rawPassword);
+        if (isPersonalVaultActive()) {
+            Optional<StoredPersonalData> existing = personalDataRepository.findByUserId(userId);
+            String fullName = existing.map(StoredPersonalData::fullName)
+                .orElseGet(() -> defaultFullNameFromEmail(normalizedEmail));
+            StoredPersonalData toStore = new StoredPersonalData(
+                userId,
+                normalizedEmail,
+                fullName,
+                existing.map(StoredPersonalData::phone).orElse(null),
+                encodedHash,
+                existing.map(StoredPersonalData::calendarSyncConsent).orElse(false),
+                existing.map(StoredPersonalData::calendarSyncConsentAt).orElse(null),
+                clock.instant()
+            );
+            upsertVault(toStore);
+            return;
+        }
         credentialRepository.upsert(new StoredLocalCredential(
             organizationId,
             userId,
@@ -89,6 +149,65 @@ public class AuthBusiness {
             encodedHash,
             clock.instant()
         ));
+    }
+
+    public UserSummary registerPersonalProfile(UUID userId, String email, String fullName, String phone) {
+        if (userId == null) {
+            throw new AccessBusinessException(ErrorCode.VALIDATION_FAILED, "userId must not be null");
+        }
+        String normalizedEmail = normalizeEmail(email);
+        String cleanFullName = requireNonBlank(fullName, MAX_FULL_NAME_LENGTH, "fullName");
+        String cleanPhone = trimOptional(phone, MAX_PHONE_LENGTH);
+
+        StoredIdentityAccount account = userRepository.findById(userId)
+            .orElseThrow(() -> new AccessBusinessException(ErrorCode.NOT_FOUND, "Identity account not found"));
+        if (IdentityStatus.DELETED_GDPR.name().equals(account.status())) {
+            throw new AccessBusinessException(
+                ErrorCode.TRANSITION_NOT_ALLOWED,
+                "Cannot register personal profile on GDPR-deleted account"
+            );
+        }
+        if (!isPersonalVaultActive()) {
+            throw new IllegalStateException("PersonalDataRepository is not configured");
+        }
+
+        Optional<StoredPersonalData> existing = personalDataRepository.findByUserId(userId);
+        StoredPersonalData stored = upsertVault(new StoredPersonalData(
+            userId,
+            normalizedEmail,
+            cleanFullName,
+            cleanPhone,
+            existing.map(StoredPersonalData::passwordHash).orElse(null),
+            existing.map(StoredPersonalData::calendarSyncConsent).orElse(false),
+            existing.map(StoredPersonalData::calendarSyncConsentAt).orElse(null),
+            clock.instant()
+        ));
+        return new UserSummary(stored.userId(), stored.fullName(), stored.email(), false);
+    }
+
+    public Map<UUID, UserSummary> resolveUserSummaries(Set<UUID> userIds) {
+        if (userIds == null) {
+            throw new AccessBusinessException(ErrorCode.VALIDATION_FAILED, "userIds must not be null");
+        }
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, StoredPersonalData> found = isPersonalVaultActive()
+            ? personalDataRepository.findByUserIds(userIds)
+            : Map.of();
+        Map<UUID, UserSummary> summaries = new LinkedHashMap<>();
+        for (UUID userId : userIds) {
+            StoredPersonalData personalData = found.get(userId);
+            if (personalData != null) {
+                summaries.put(
+                    userId,
+                    new UserSummary(userId, personalData.fullName(), personalData.email(), false)
+                );
+            } else {
+                summaries.put(userId, new UserSummary(userId, ANONYMIZED_USER_LABEL, null, true));
+            }
+        }
+        return Collections.unmodifiableMap(summaries);
     }
 
     public AuthTokenBundle authenticateLocal(
@@ -105,16 +224,31 @@ public class AuthBusiness {
             );
         }
         String normalizedEmail = normalizeEmail(email);
-        StoredLocalCredential credential = credentialRepository.findByOrganizationAndEmail(organizationId, normalizedEmail)
-            .orElseThrow(() -> new AccessBusinessException(
-                ErrorCode.INVALID_CREDENTIALS,
-                "Invalid email or password"
-            ));
-        if (!Argon2PasswordUtils.matches(rawPassword, credential.passwordHash())) {
+        UUID authenticatedUserId;
+        String storedHash;
+        if (isPersonalVaultActive()) {
+            StoredPersonalData personalData = personalDataRepository.findByEmailIgnoreCase(normalizedEmail)
+                .orElseThrow(() -> new AccessBusinessException(
+                    ErrorCode.INVALID_CREDENTIALS,
+                    "Invalid email or password"
+                ));
+            authenticatedUserId = personalData.userId();
+            storedHash = personalData.passwordHash();
+        } else {
+            StoredLocalCredential credential = credentialRepository
+                .findByOrganizationAndEmail(organizationId, normalizedEmail)
+                .orElseThrow(() -> new AccessBusinessException(
+                    ErrorCode.INVALID_CREDENTIALS,
+                    "Invalid email or password"
+                ));
+            authenticatedUserId = credential.userId();
+            storedHash = credential.passwordHash();
+        }
+        if (storedHash == null || !Argon2PasswordUtils.matches(rawPassword, storedHash)) {
             throw new AccessBusinessException(ErrorCode.INVALID_CREDENTIALS, "Invalid email or password");
         }
 
-        StoredIdentityAccount account = userRepository.findById(credential.userId())
+        StoredIdentityAccount account = userRepository.findById(authenticatedUserId)
             .orElseThrow(() -> new AccessBusinessException(ErrorCode.INVALID_CREDENTIALS, "Account not found"));
         if (!IdentityStatus.ACTIVE.name().equals(account.status())) {
             throw new AccessBusinessException(ErrorCode.INVALID_CREDENTIALS, "Account is not active");
@@ -335,10 +469,66 @@ public class AuthBusiness {
         }
     }
 
+    private boolean isPersonalVaultActive() {
+        return personalDataRepository != null && personalDataRepository.isConfigured();
+    }
+
+    private StoredPersonalData upsertVault(StoredPersonalData candidate) {
+        try {
+            return personalDataRepository.upsert(candidate);
+        } catch (AccessRepositoryException ex) {
+            if ("23505".equals(ex.getSqlState())) {
+                throw new AccessBusinessException(
+                    ErrorCode.ALREADY_EXISTS,
+                    "Email already registered in personal data vault"
+                );
+            }
+            throw ex;
+        }
+    }
+
+    private static String defaultFullNameFromEmail(String normalizedEmail) {
+        String prefix = normalizedEmail.substring(0, normalizedEmail.indexOf('@')).trim();
+        String base = prefix.isEmpty() ? "Usuario" : prefix;
+        return base.length() > MAX_FULL_NAME_LENGTH ? base.substring(0, MAX_FULL_NAME_LENGTH) : base;
+    }
+
+    private static String requireNonBlank(String raw, int maxLength, String fieldName) {
+        if (raw == null || raw.isBlank()) {
+            throw new AccessBusinessException(ErrorCode.VALIDATION_FAILED, fieldName + " must not be blank");
+        }
+        String trimmed = raw.trim();
+        if (trimmed.length() > maxLength) {
+            throw new AccessBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                fieldName + " must not exceed " + maxLength + " characters"
+            );
+        }
+        return trimmed;
+    }
+
+    private static String trimOptional(String raw, int maxLength) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        if (trimmed.length() > maxLength) {
+            throw new AccessBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "Field must not exceed " + maxLength + " characters"
+            );
+        }
+        return trimmed;
+    }
+
     private static String normalizeEmail(String email) {
         if (email == null || email.isBlank() || !email.contains("@")) {
             throw new AccessBusinessException(ErrorCode.VALIDATION_FAILED, "Invalid email format");
         }
-        return email.trim().toLowerCase(Locale.ROOT);
+        String normalized = email.trim().toLowerCase(Locale.ROOT);
+        if (normalized.length() > MAX_EMAIL_LENGTH) {
+            throw new AccessBusinessException(ErrorCode.VALIDATION_FAILED, "Email must not exceed 254 characters");
+        }
+        return normalized;
     }
 }

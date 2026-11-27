@@ -9,6 +9,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaField;
+import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
@@ -279,23 +280,10 @@ class GlobalArchitectureComplianceTest {
     }
 
     @Test
-    @DisplayName("RH-5, RH-6, RH-7 y RH-8: Cero PII fuera de mod-02, cero float/double monetario y uso de Clock")
-    void shouldEnforcePiiConfinementMonetaryPrecisionAndExplicitClock() {
-        classes().that().resideOutsideOfPackage("app.resourcehub.access..")
-                .should(new ArchCondition<>("not declare PII fields outside MOD-02 access (ADR-015)") {
-                    @Override
-                    public void check(JavaClass javaClass, ConditionEvents events) {
-                        for (JavaField field : javaClass.getFields()) {
-                            String normalized = field.getName().toLowerCase(Locale.ROOT);
-                            if (PII_FIELD_NAMES.contains(normalized)) {
-                                events.add(SimpleConditionEvent.violated(
-                                        javaClass,
-                                        javaClass.getName() + " declares PII field " + field.getName()));
-                            }
-                        }
-                    }
-                })
-                .check(allMainClasses);
+    @DisplayName("RH-5, RH-6, RH-7 y RH-8: Cero PII fuera de mod-02 (Java + SQL), cero float/double y uso de Clock")
+    void shouldEnforcePiiConfinementMonetaryPrecisionAndExplicitClock() throws IOException {
+        checkPiiConfinementRules(allMainClasses);
+        verifySqlMigrationsContainNoPiiOutsideAccessVault();
 
         classes().that().haveSimpleNameContaining("Money")
                 .or().haveSimpleNameContaining("Price")
@@ -331,6 +319,90 @@ class GlobalArchitectureComplianceTest {
                 .check(allMainClasses);
     }
 
+    @Test
+    @DisplayName("TT-017 [PRU-02] — Prueba negativa Regla 6 CI: detecta PII en structs Java y scripts SQL fuera de MOD-02")
+    void shouldRejectSimulatedPiiViolationsInJavaAndSql() {
+        JavaClasses classesWithPiiViolation = new ClassFileImporter()
+                .importClasses(ViolatingPiiStruct.class);
+        assertThatThrownBy(() -> checkPiiConfinementRules(classesWithPiiViolation))
+                .isInstanceOf(AssertionError.class);
+
+        assertThatThrownBy(() -> validateSqlCreateTablesContainNoPii(
+                Path.of("V999__violating_pii.sql"),
+                "CREATE TABLE reservations.violating_audit (id UUID NOT NULL, email VARCHAR(254) NOT NULL);"))
+                .isInstanceOf(AssertionError.class);
+    }
+
+    private static void checkPiiConfinementRules(JavaClasses classesToCheck) {
+        classes().that().resideOutsideOfPackage("app.resourcehub.access..")
+                .should(new ArchCondition<>("not declare PII fields or accessors outside MOD-02 access (ADR-015)") {
+                    @Override
+                    public void check(JavaClass javaClass, ConditionEvents events) {
+                        for (JavaField field : javaClass.getFields()) {
+                            String normalized = field.getName().toLowerCase(Locale.ROOT);
+                            if (PII_FIELD_NAMES.contains(normalized)) {
+                                events.add(SimpleConditionEvent.violated(
+                                        javaClass,
+                                        javaClass.getName() + " declares PII field " + field.getName()));
+                            }
+                        }
+                        for (JavaMethod method : javaClass.getMethods()) {
+                            String normalized = method.getName().toLowerCase(Locale.ROOT);
+                            if (PII_FIELD_NAMES.contains(normalized)) {
+                                events.add(SimpleConditionEvent.violated(
+                                        javaClass,
+                                        javaClass.getName() + " declares PII accessor " + method.getName()));
+                            }
+                        }
+                    }
+                })
+                .check(classesToCheck);
+    }
+
+    private static void verifySqlMigrationsContainNoPiiOutsideAccessVault() throws IOException {
+        Path migrationRoot = repoRoot.resolve("db/migration");
+        try (Stream<Path> sqlFiles = Files.walk(migrationRoot)) {
+            List<Path> scripts = sqlFiles.filter(p -> p.toString().endsWith(".sql")).toList();
+            assertThat(scripts).isNotEmpty();
+            for (Path sqlFile : scripts) {
+                validateSqlCreateTablesContainNoPii(sqlFile, Files.readString(sqlFile));
+            }
+        }
+    }
+
+    private static void validateSqlCreateTablesContainNoPii(Path sqlFile, String sqlContent) {
+        Set<String> allowedVaultTables = Set.of(
+                "access.personal_data",
+                "access.external_identity",
+                "platform_catalog.platform_admin");
+        Pattern createTablePattern = Pattern.compile(
+                "CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([a-z_]+\\.[a-z_]+)\\s*\\((.*?)\\);",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher tableMatcher = createTablePattern.matcher(sqlContent);
+        while (tableMatcher.find()) {
+            String qualifiedTable = tableMatcher.group(1).toLowerCase(Locale.ROOT);
+            if (allowedVaultTables.contains(qualifiedTable)) {
+                continue;
+            }
+            String body = tableMatcher.group(2);
+            for (String rawLine : body.split(",")) {
+                String trimmed = rawLine.replaceAll("--.*", "").trim();
+                if (trimmed.isEmpty()
+                        || trimmed.toUpperCase(Locale.ROOT).startsWith("CONSTRAINT ")
+                        || trimmed.toUpperCase(Locale.ROOT).startsWith("PRIMARY ")
+                        || trimmed.toUpperCase(Locale.ROOT).startsWith("UNIQUE ")
+                        || trimmed.toUpperCase(Locale.ROOT).startsWith("CHECK ")) {
+                    continue;
+                }
+                String firstToken = trimmed.split("\\s+")[0].toLowerCase(Locale.ROOT);
+                assertThat(PII_FIELD_NAMES)
+                        .as("Tabla %s en %s no debe declarar columna PII '%s' fuera de access.personal_data (ADR-015)",
+                                qualifiedTable, sqlFile, firstToken)
+                        .doesNotContain(firstToken);
+            }
+        }
+    }
+
     private static Path resolveRepoRoot() {
         Path current = Path.of("").toAbsolutePath();
         while (current != null) {
@@ -343,5 +415,15 @@ class GlobalArchitectureComplianceTest {
     }
 
     private static final class ViolatingSampleDTO {
+    }
+
+    private static final class ViolatingPiiStruct {
+        @SuppressWarnings("unused")
+        private String email;
+
+        @SuppressWarnings("unused")
+        String email() {
+            return email;
+        }
     }
 }

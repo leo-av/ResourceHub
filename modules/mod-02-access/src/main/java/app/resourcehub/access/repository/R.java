@@ -1,6 +1,7 @@
 package app.resourcehub.access.repository;
 
 import app.resourcehub.access.repository.logic.local.LocalCredentialRepository;
+import app.resourcehub.access.repository.logic.local.PersonalDataRepository;
 import app.resourcehub.access.repository.logic.local.RefreshTokenRepository;
 import app.resourcehub.access.repository.logic.local.UserRepository;
 import javax.sql.DataSource;
@@ -10,6 +11,7 @@ public final class R {
     private static UserRepository userRepository;
     private static LocalCredentialRepository localCredentialRepository;
     private static RefreshTokenRepository refreshTokenRepository;
+    private static PersonalDataRepository personalDataRepository;
 
     private R() {
         throw new UnsupportedOperationException("Static XF repository injector");
@@ -19,12 +21,14 @@ public final class R {
         userRepository = new UserRepository();
         localCredentialRepository = new LocalCredentialRepository();
         refreshTokenRepository = new RefreshTokenRepository();
+        personalDataRepository = new PersonalDataRepository();
     }
 
     public static void init(DataSource dataSource) {
         userRepository = new UserRepository(dataSource);
         localCredentialRepository = new LocalCredentialRepository();
         refreshTokenRepository = new RefreshTokenRepository();
+        personalDataRepository = new PersonalDataRepository(dataSource);
     }
 
     public static UserRepository users() {
@@ -48,6 +52,13 @@ public final class R {
         return refreshTokenRepository;
     }
 
+    public static PersonalDataRepository personalData() {
+        if (personalDataRepository == null) {
+            throw new IllegalStateException("R.init() has not been called");
+        }
+        return personalDataRepository;
+    }
+
     public static void terminate() {
         if (localCredentialRepository != null) {
             localCredentialRepository.clear();
@@ -58,5 +69,6 @@ public final class R {
         userRepository = null;
         localCredentialRepository = null;
         refreshTokenRepository = null;
+        personalDataRepository = null;
     }
 }

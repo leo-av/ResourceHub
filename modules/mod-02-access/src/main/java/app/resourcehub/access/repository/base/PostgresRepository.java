@@ -20,6 +20,10 @@ public abstract class PostgresRepository {
         this.dataSource = dataSource;
     }
 
+    public boolean isConfigured() {
+        return dataSource != null;
+    }
+
     protected <T> T executeWithConnection(SqlWork<T> work, String operation) {
         if (dataSource == null) {
             throw new AccessRepositoryException("DataSource not configured for " + operation);
