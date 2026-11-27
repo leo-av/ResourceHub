@@ -9,10 +9,10 @@ description: Punto de entrada metodológico y coordinador del ciclo completo de 
 | :--- | :--- |
 | **Identificador de SKILL** | `RH-SKILL-WORKFLOW` |
 | **Nombre de activación** | `resourcehub-development-workflow` |
-| **Versión de la SKILL** | `v1.0.0` |
-| **Fecha de vigencia** | `2026-11-24` |
+| **Versión de la SKILL** | `v1.1.0` |
+| **Fecha de vigencia** | `2026-11-27` |
 | **Ámbito** | Específica del proyecto **ResourceHub** (`.agents/skills/resourcehub-development-workflow/`) |
-| **Estándares base (`APPROVED`)** | `ResourceHub — Flujo de Desarrollo SDD y TDD v1.0` (`RH-FLU-SDD-TDD-v1.0`), `Guía de Preparación para Desarrollo con Agentes v1.0` (`RH-GUI-AGE-v1.0`), `Backlog Técnico Implementable v1.0` (`RH-BACK-TEC-IMP-v1.0`), `Matriz de Dependencias del Backlog v1.0` (`RH-MAT-DEP-BACK-v1.0`) |
+| **Estándares base (`APPROVED`)** | `ResourceHub — Flujo de Desarrollo SDD y TDD v1.0` (`RH-FLU-SDD-TDD-v1.0`), `Guía de Preparación para Desarrollo con Agentes v1.0` (`RH-GUI-AGE-v1.0`), `Backlog Técnico Implementable v1.0` (`RH-BACK-TEC-IMP-v1.0`), `Matriz de Dependencias del Backlog v1.0` (`RH-MAT-DEP-BACK-v1.0`), `DEC-099` (Flujo `develop` Preproducción → `main` Producción) |
 | **SKILLs orquestadas** | `resourcehub-sdd` (especificación y `QG-01..02`), `resourcehub-tdd` (ciclo `RED -> GREEN -> REFACTOR` y `QG-03..05`), `xf-architecture` (`DTD-003`), `response-wrapper` (`DTD-007`), `document-version-management` (versionado en Google Drive) |
 | **Recursos empaquetados** | [`references/context-packages-and-gates.md`](references/context-packages-and-gates.md) |
 
@@ -83,12 +83,16 @@ flowchart TD
    - Si se detecta cualquiera de las 8 condiciones *Stop-the-Line* (Sección 5), detén el flujo de la tarea activa y escala al propietario con el formato estándar.
    - Si `QG-01` y `QG-02` son `PASS`, transiciona la tarea a `Execution = READY_FOR_DEVELOPMENT` y avanza a la Fase 4.
 
-### Fase 4 — Preparación Técnica sobre la Arquitectura XF
+### Fase 4 — Preparación Técnica sobre la Arquitectura XF y Rama de Trabajo (`DEC-099`)
 
-1. Verifica el **Pre-Flight Checklist de 8 pasos** de `resourcehub-tdd`:
+1. **Creación obligatoria de rama conforme al flujo de entornos (`develop` = Preproducción, `main` = Producción):**
+   - **Todo desarrollo normal** (`feat/TT-XXX-<slug>`, `fix/*`, `spec/*`, `chore/*`, `refactor/*`, `test/*`) debe crearse **siempre desde `develop`** y su Pull Request debe abrirse **siempre hacia `develop`** (entorno estable de **Preproducción**).
+   - **Única excepción (`hotfix/*`):** Solo una corrección urgente en Producción se crea desde `main` (o tag `v*`) con PR hacia `main`, exigiendo un **backmerge obligatorio posterior hacia `develop`**.
+   - **Prohibido abrir PRs de funcionalidades/tareas directamente contra `main`.** La promoción a **`main` (Producción)** se realiza exclusivamente desde **`develop`** tras superar CI/CD (`ci-develop.yml`) y las validaciones acordes de Preproducción.
+2. Verifica el **Pre-Flight Checklist de 8 pasos** de `resourcehub-tdd`:
    - Identificación exacta de los artefactos a tocar en las **3 capas cerradas XF** (`repository/logic/*Repository` vía `R`, `business/logic/*Business` vía `B`, `api/logic/services/*Service` o `api/logic/gui/*View` vía `A`) y en los **5 tipos cerrados XF** (`logic/`, `base/`, `R`/`B`/`A`/`XF`, `utils/*Utils`, `structs/` sin sufijos `DTO`/`Entity`/`Model` + `*Exception`).
    - Confirmación del host (`platform.resourcehub.app` vs `{orgSlug}.resourcehub.app`), prefijo de canal (`/app`, `/workspace`, `/console`, `/external`, `/webhooks/inbound`) y valores `ErrorCode` ENUM (`MOD-11`) declarados en la `SPEC-*`.
-2. Transiciona la unidad de trabajo a `Execution = IN_PROGRESS`.
+3. Transiciona la unidad de trabajo a `Execution = IN_PROGRESS`.
 
 ### Fase 5 — Implementación Guiada por Pruebas (Delega en [`resourcehub-tdd`](../resourcehub-tdd/SKILL.md))
 
@@ -100,9 +104,9 @@ flowchart TD
 3. **Retorno obligatorio *Spec-First*:** Si durante la Fase 5 se descubre que falta un código de error, un campo o una regla en la `SPEC-<MOD>-<NNN>`, **suspende inmediatamente la Fase 5 y regresa a la Fase 3 (`resourcehub-sdd`)**.
 4. Confirma **`QG-04`** cuando no queden escenarios pendientes en la `SPEC-*` y la cobertura de ramas en `business/logic` sea **≥ 90%**.
 
-### Fase 6 — Certificación de las 6 Puertas de CI y No Regresión (`QG-05`)
+### Fase 6 — Certificación de las 6 Puertas de CI, Flujo de Ramas y No Regresión (`QG-05`)
 
-1. Ejecuta las **6 Puertas de CI** definidas en `RH-DIS-TEC-v1.0 §6.2` y `RH-FLU-SDD-TDD-v1.0 §1`:
+1. Verifica la política de ramas (`./scripts/validate-branch-flow.sh <base> <head>`) y ejecuta las **6 Puertas de CI** definidas en `RH-DIS-TEC-v1.0 §6.2` y `RH-FLU-SDD-TDD-v1.0 §1`:
    - **Puerta 1:** Compilación estática y tipado estricto.
    - **Puerta 2:** `PRU-02` (`ArchUnit` + **8 Reglas ResourceHub + 50 Reglas XF** = `0 violaciones`).
    - **Puerta 3:** `PRU-01` (Unitarias de negocio `28 RN`, `Clock` inyectable, `0 mocks`, cobertura `≥ 90%`).
@@ -118,10 +122,11 @@ flowchart TD
    - Aplica `.agents/skills/document-version-management/SKILL.md`.
    - Mantén todo documento nuevo o modificado en estado `UNDER REVIEW` hasta que el usuario lo apruebe explícitamente (jamás muevas versiones anteriores a `@old/` antes de recibir la aprobación explícita del usuario).
 
-### Fase 8 — Finalización, Quality Gate `QG-06` y Entrega de las 7 Evidencias
+### Fase 8 — Finalización, Pull Request hacia `develop`, Quality Gate `QG-06` y Promoción a `main`
 
-1. Verifica el cumplimiento de **`QG-06`** y presenta al usuario el informe estandarizado de cierre con las **7 evidencias obligatorias** (Sección 7).
-2. Actualiza el estado de ejecución de la tarea a `Execution = DONE` (y solicita la validación humana de hito `QG-06` al completar todas las tareas de un `MVP-*` / `HITO-01..08`).
+1. Abre la Pull Request de la rama de trabajo hacia **`develop` (Preproducción)** (o hacia `main` únicamente si se trata de un `hotfix/*` productivo) utilizando `.github/pull_request_template.md` y espera la luz verde de `ci-pr.yml`.
+2. Verifica el cumplimiento de **`QG-06`** y presenta al usuario el informe estandarizado de cierre con las **7 evidencias obligatorias** (Sección 7).
+3. Tras la aprobación y fusión en `develop`, `ci-develop.yml` certifica el entorno de Preproducción. La promoción a **`main` (Producción)** se efectúa mediante PR dedicada `develop -> main` una vez superadas las validaciones de Preproducción (y al completar un `MVP-*` / `HITO-01..08`).
 
 ---
 
@@ -130,11 +135,11 @@ flowchart TD
 | Escenario / Petición de Trabajo | SKILL Coordinadora | Secuencia de Ejecución de SKILLs | Puertas Exigidas |
 | :--- | :--- | :--- | :--- |
 | **A. Especificar o auditar una `SPEC-<MOD>-<NNN>` sin codificar** | `resourcehub-development-workflow` (Fases 1–3) | `resourcehub-sdd` + `xf-architecture` + `response-wrapper` | `QG-01`, `QG-02` |
-| **B. Implementar una `TT-*` / `HU-*` con `SPEC-*` ya `APPROVED`** | `resourcehub-development-workflow` (Fases 1–8) | `resourcehub-sdd` (check `QG-01..02`) → `xf-architecture` + `response-wrapper` → `resourcehub-tdd` (`RED -> GREEN -> REFACTOR` + 6 puertas CI) | `QG-01` a `QG-06` |
-| **C. Abordar una `FUN-*` / `HU-*` que requiere redactar o ampliar su `SPEC-*` e implementarla** | `resourcehub-development-workflow` (Fases 1–8) | `resourcehub-sdd` (15 secciones; parada si requiere aprobación humana) → `resourcehub-tdd` | `QG-01` a `QG-06` |
-| **D. Corregir un defecto o regresión (*Bugfix*)** | `resourcehub-development-workflow` | `resourcehub-sdd` (confirmar comportamiento esperado en `SPEC-*`) → `resourcehub-tdd` (test que reproduce el bug en `RED` → fix mínimo en `GREEN` → `REFACTOR` + `PRU-02`) | `QG-03` a `QG-06` |
-| **E. Refactorizar componentes internos XF sin cambiar contratos** | `resourcehub-development-workflow` | `resourcehub-sdd` (confirmar invariancia de contrato) → `xf-architecture` → `resourcehub-tdd` (suite en `GREEN` + refactor + `PRU-02` `0 violaciones`) | `QG-04` a `QG-06` |
-| **F. Añadir tabla/columna (`PCR-DAT-*`), nuevo código `FFMMCC` (`DTD-011`) o cambiar contrato** | `resourcehub-development-workflow` (*Spec-First Change*) | `resourcehub-sdd` (protocolo de cambio + **Stop-the-Line para aprobación humana**) → `document-version-management` → `resourcehub-tdd` | `QG-01` a `QG-06` (con parada humana obligatoria) |
+| **B. Implementar una `TT-*` / `HU-*` con `SPEC-*` ya `APPROVED`** | `resourcehub-development-workflow` (Fases 1–8) | `resourcehub-sdd` (check `QG-01..02`) → `xf-architecture` + `response-wrapper` → `resourcehub-tdd` (`RED -> GREEN -> REFACTOR` + 6 puertas CI) → PR a `develop` | `QG-01` a `QG-06` |
+| **C. Abordar una `FUN-*` / `HU-*` que requiere redactar o ampliar su `SPEC-*` e implementarla** | `resourcehub-development-workflow` (Fases 1–8) | `resourcehub-sdd` (15 secciones; parada si requiere aprobación humana) → `resourcehub-tdd` → PR a `develop` | `QG-01` a `QG-06` |
+| **D. Corregir un defecto o regresión (*Bugfix* / *Hotfix*)** | `resourcehub-development-workflow` | `resourcehub-sdd` (confirmar comportamiento esperado en `SPEC-*`) → `resourcehub-tdd` (test en `RED` → fix en `GREEN` → `REFACTOR` + `PRU-02`) → PR a `develop` (o `hotfix/* -> main` + backmerge a `develop`) | `QG-03` a `QG-06` |
+| **E. Refactorizar componentes internos XF sin cambiar contratos** | `resourcehub-development-workflow` | `resourcehub-sdd` (confirmar invariancia de contrato) → `xf-architecture` → `resourcehub-tdd` (suite en `GREEN` + refactor + `PRU-02` `0 violaciones`) → PR a `develop` | `QG-04` a `QG-06` |
+| **F. Añadir tabla/columna (`PCR-DAT-*`), nuevo código `FFMMCC` (`DTD-011`) o cambiar contrato** | `resourcehub-development-workflow` (*Spec-First Change*) | `resourcehub-sdd` (protocolo de cambio + **Stop-the-Line para aprobación humana**) → `document-version-management` → `resourcehub-tdd` → PR a `develop` | `QG-01` a `QG-06` (con parada humana obligatoria) |
 
 ---
 
@@ -178,6 +183,7 @@ El agente **detendrá inmediatamente la codificación de la unidad activa** y es
 | Acciones Autorizadas (Autonomía del Agente) | Acciones Prohibidas sin Aprobación Humana Expresa |
 | :--- | :--- |
 | Aplicar el algoritmo de selección del DAG para identificar la siguiente `TT-*` con `Approval = APPROVED` y dependencias en `DONE`. | Implementar tareas con `Approval = DRAFT` / `READY_FOR_REVIEW` o con dependencias `TT-*` previas pendientes. |
+| Crear ramas de trabajo desde `develop` y abrir Pull Requests hacia **`develop` (Preproducción)** tras pasar las puertas de calidad. | Abrir PRs de desarrollo (`feat/*`, `fix/*`, `chore/*`, `spec/*`) directamente contra **`main` (Producción)** o promocionar `develop -> main` sin validación y aprobación humana. |
 | Cargar el paquete de lectura acotada del módulo y redactar las 15 secciones de `SPEC-<MOD>-<NNN>` derivadas de la baseline `APPROVED`. | Modificar unilateralmente documentos `APPROVED`, auto-aprobar borradores `UNDER REVIEW` o mover archivos a `@old/` sin orden del usuario. |
 | Aplicar valores por defecto aprobados en `MRD-007` para cuestiones `OPEN-*` de Nivel 2, dejándolos documentados en la Sección 15 de la `SPEC-*`. | Resolver por cuenta propia cuestiones `BLOCKER`/`HIGH`, contradicciones documentales o inventar reglas de negocio no escritas. |
 | Implementar componentes en las 3 capas y 5 tipos cerrados XF y ejecutar ciclos `RED -> GREEN -> REFACTOR` en `Testcontainers PostgreSQL 16+`. | Añadir tablas/columnas sin `PCR-DAT-*` aprobada, crear códigos fuera de los 34 `FFMMCC` sin el flujo `DTD-011`, o usar números mágicos en módulos. |
