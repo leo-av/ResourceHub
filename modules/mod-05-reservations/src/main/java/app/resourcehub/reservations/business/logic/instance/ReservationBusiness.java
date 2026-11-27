@@ -32,8 +32,7 @@ public class ReservationBusiness {
     private static final int MAX_PAGE_SIZE = 100;
     private static final String DEFAULT_CURRENCY = "EUR";
     private static final String LINE_STATUS_ACTIVE = "ACTIVE";
-    private static final String PAYMENT_NONE = "NONE";
-    private static final String ATTENDANCE_PENDING = "PENDING";
+    private static final String PAYMENT_SIN_CARGO = "SIN_CARGO";
 
     private final ReservationRepository reservationRepository;
     private final Supplier<ScheduleBusiness> scheduleBusinessSupplier;
@@ -154,8 +153,8 @@ public class ReservationBusiness {
             null,
             0L,
             DEFAULT_CURRENCY,
-            PAYMENT_NONE,
-            ATTENDANCE_PENDING,
+            PAYMENT_SIN_CARGO,
+            null,
             null,
             null,
             null,
