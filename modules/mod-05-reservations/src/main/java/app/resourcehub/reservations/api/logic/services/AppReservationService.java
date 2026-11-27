@@ -3,6 +3,7 @@ package app.resourcehub.reservations.api.logic.services;
 import app.resourcehub.reservations.business.B;
 import app.resourcehub.reservations.business.structs.CreateReservationCommand;
 import app.resourcehub.reservations.business.structs.EffectiveAvailability;
+import app.resourcehub.reservations.business.structs.ModifyReservationCommand;
 import app.resourcehub.reservations.business.structs.Reservation;
 import app.resourcehub.reservations.business.structs.ReservationPage;
 import app.resourcehub.reservations.business.structs.ReservationsBusinessException;
@@ -45,6 +46,28 @@ public class AppReservationService {
     ) {
         Reservation created = B.reservations().createReservation(actor, command, orgContext);
         return ResponseWrapper.ok("OK", created, effectiveRequestId(requestId), effectiveClock(clock).instant());
+    }
+
+    public ResponseWrapper<Reservation> modifyReservation(
+        ActorContext actor,
+        UUID reservationId,
+        ModifyReservationCommand command,
+        OrganizationContext orgContext,
+        String requestId,
+        Clock clock
+    ) {
+        Reservation modified = B.reservations().modifyReservation(actor, reservationId, command, orgContext);
+        return ResponseWrapper.ok("OK", modified, effectiveRequestId(requestId), effectiveClock(clock).instant());
+    }
+
+    public ResponseWrapper<Reservation> cancelReservation(
+        ActorContext actor,
+        UUID reservationId,
+        String requestId,
+        Clock clock
+    ) {
+        Reservation cancelled = B.reservations().cancelReservation(actor, reservationId);
+        return ResponseWrapper.ok("OK", cancelled, effectiveRequestId(requestId), effectiveClock(clock).instant());
     }
 
     public ResponseWrapper<PageResponse<Reservation>> listOwnReservations(
