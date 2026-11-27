@@ -110,16 +110,16 @@ class Mvp0VerticalSlicePostgresIT {
         for (ErrorCode code : ErrorCode.values()) {
             assertThat(catalog)
                 .anySatisfy(entry -> {
-                    assertThat(entry.code()).isEqualTo(code.name());
+                    assertThat(entry.code()).isEqualTo(code);
                     assertThat(entry.active()).isTrue();
                     if (code == ErrorCode.OK) {
                         assertThat(entry.numericValue()).isZero();
-                        assertThat(entry.httpStatus()).isEqualTo(200);
+                        assertThat((int) entry.httpStatus()).isEqualTo(200);
                     } else {
                         var translated = app.resourcehub.gateway.business.B.errorTranslation()
                             .translate(code, List.of());
                         assertThat(entry.numericValue()).isEqualTo(translated.numericCode());
-                        assertThat(entry.httpStatus()).isEqualTo(translated.httpStatus());
+                        assertThat((int) entry.httpStatus()).isEqualTo(translated.httpStatus());
                     }
                 });
         }
