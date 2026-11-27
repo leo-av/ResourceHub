@@ -289,6 +289,144 @@ public class ReservationRepository extends PostgresRepository {
         }, "ReservationRepository.findActiveLinesOverlapping");
     }
 
+    public List<StoredReservationLine> findActiveLinesOverlappingExcludingReservation(
+        UUID resourceId,
+        Instant rangeStart,
+        Instant rangeEnd,
+        UUID excludedReservationId
+    ) {
+        String sql = "SELECT " + LINE_COLUMNS + """
+            FROM reservations.reservation_line
+            WHERE resource_id = ?
+              AND status = 'ACTIVE'
+              AND reservation_id <> ?
+              AND tstzrange(start_at, end_at, '[)') && tstzrange(?::timestamptz, ?::timestamptz, '[)')
+            ORDER BY start_at ASC, id ASC
+            """;
+        return executeWithConnection(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setObject(1, resourceId);
+                ps.setObject(2, excludedReservationId);
+                ps.setTimestamp(3, Timestamp.from(rangeStart));
+                ps.setTimestamp(4, Timestamp.from(rangeEnd));
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<StoredReservationLine> results = new ArrayList<>();
+                    while (rs.next()) {
+                        results.add(mapLine(rs));
+                    }
+                    return results;
+                }
+            }
+        }, "ReservationRepository.findActiveLinesOverlappingExcludingReservation");
+    }
+
+    public Optional<StoredReservationAggregate> modifyAggregateWithCanonicalLocks(
+        List<UUID> canonicalResourceRoots,
+        UUID reservationId,
+        int expectedVersion,
+        Instant updatedAt,
+        StoredReservationLine replacementLine
+    ) {
+        if (reservationId == null || replacementLine == null) {
+            throw new ReservationsRepositoryException("reservationId and replacementLine must not be null");
+        }
+        List<UUID> sortedLockKeys = canonicalLockOrder(canonicalResourceRoots);
+        String advisoryLockSql = "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))";
+        String overlapSql = """
+            SELECT 1
+            FROM reservations.reservation_line
+            WHERE resource_id = ?
+              AND status = 'ACTIVE'
+              AND reservation_id <> ?
+              AND tstzrange(start_at, end_at, '[)') && tstzrange(?::timestamptz, ?::timestamptz, '[)')
+            LIMIT 1
+            """;
+        String updateHeaderSql = """
+            UPDATE reservations.reservation
+            SET version = version + 1,
+                updated_at = ?
+            WHERE id = ? AND version = ?
+            """ + "RETURNING " + HEADER_COLUMNS;
+        String updateLineSql = """
+            UPDATE reservations.reservation_line
+            SET resource_id = ?,
+                resource_root_id = ?,
+                start_at = ?,
+                end_at = ?,
+                requested_units = ?,
+                is_exclusive = ?,
+                line_amount_minor = ?,
+                currency_code = ?
+            WHERE reservation_id = ? AND status = 'ACTIVE'
+            """ + "RETURNING " + LINE_COLUMNS;
+
+        return executeWithConnection(conn -> {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement psLock = conn.prepareStatement(advisoryLockSql)) {
+                    for (UUID key : sortedLockKeys) {
+                        psLock.setString(1, key.toString());
+                        psLock.execute();
+                    }
+                }
+                try (PreparedStatement psOverlap = conn.prepareStatement(overlapSql)) {
+                    psOverlap.setObject(1, replacementLine.resourceId());
+                    psOverlap.setObject(2, reservationId);
+                    psOverlap.setTimestamp(3, Timestamp.from(replacementLine.startAt()));
+                    psOverlap.setTimestamp(4, Timestamp.from(replacementLine.endAt()));
+                    try (ResultSet rs = psOverlap.executeQuery()) {
+                        if (rs.next()) {
+                            conn.rollback();
+                            throw new ReservationsRepositoryException(
+                                "Concurrent booking conflict detected under canonical lock during modification",
+                                null,
+                                "23P01"
+                            );
+                        }
+                    }
+                }
+                StoredReservation updatedHeader;
+                try (PreparedStatement psHeader = conn.prepareStatement(updateHeaderSql)) {
+                    psHeader.setTimestamp(1, Timestamp.from(updatedAt));
+                    psHeader.setObject(2, reservationId);
+                    psHeader.setInt(3, expectedVersion);
+                    try (ResultSet rs = psHeader.executeQuery()) {
+                        if (!rs.next()) {
+                            conn.rollback();
+                            return Optional.empty();
+                        }
+                        updatedHeader = mapHeader(rs);
+                    }
+                }
+                List<StoredReservationLine> updatedLines = new ArrayList<>();
+                try (PreparedStatement psLine = conn.prepareStatement(updateLineSql)) {
+                    psLine.setObject(1, replacementLine.resourceId());
+                    psLine.setObject(2, replacementLine.resourceRootId());
+                    psLine.setTimestamp(3, Timestamp.from(replacementLine.startAt()));
+                    psLine.setTimestamp(4, Timestamp.from(replacementLine.endAt()));
+                    psLine.setInt(5, replacementLine.requestedUnits());
+                    psLine.setBoolean(6, replacementLine.exclusive());
+                    psLine.setLong(7, replacementLine.lineAmountMinor());
+                    psLine.setString(8, replacementLine.currencyCode());
+                    psLine.setObject(9, reservationId);
+                    try (ResultSet rs = psLine.executeQuery()) {
+                        while (rs.next()) {
+                            updatedLines.add(mapLine(rs));
+                        }
+                    }
+                }
+                conn.commit();
+                return Optional.of(new StoredReservationAggregate(updatedHeader, List.copyOf(updatedLines)));
+            } catch (SQLException | RuntimeException ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        }, "ReservationRepository.modifyAggregateWithCanonicalLocks");
+    }
+
     public Optional<StoredReservation> updateStatus(
         UUID reservationId,
         String newStatus,

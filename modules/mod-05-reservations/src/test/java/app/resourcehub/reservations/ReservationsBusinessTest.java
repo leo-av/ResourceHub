@@ -12,6 +12,7 @@ import app.resourcehub.reservations.business.logic.instance.EffectiveAvailabilit
 import app.resourcehub.reservations.business.logic.instance.ReservationBusiness;
 import app.resourcehub.reservations.business.structs.CreateReservationCommand;
 import app.resourcehub.reservations.business.structs.EffectiveAvailability;
+import app.resourcehub.reservations.business.structs.ModifyReservationCommand;
 import app.resourcehub.reservations.business.structs.Reservation;
 import app.resourcehub.reservations.business.structs.ReservationPage;
 import app.resourcehub.reservations.business.structs.ReservationStatus;
@@ -535,6 +536,153 @@ class ReservationsBusinessTest {
         assertThat(deleteMethods).isEmpty();
     }
 
+    @Test
+    @DisplayName("TT-018 & TT-019 [PRU-01 / AC-010]: Modificacion integral excluyendo propia reserva y cancelacion HOLDER/MANAGEMENT")
+    void shouldModifyExcludingOwnLinesRollbackOnConflictAndCancelSafely() {
+        Instant t09Z = Instant.parse("2026-11-30T09:00:00Z");
+        Instant t10Z = Instant.parse("2026-11-30T10:00:00Z");
+        Instant t11Z = Instant.parse("2026-11-30T11:00:00Z");
+        Instant t12Z = Instant.parse("2026-11-30T12:00:00Z");
+        Instant t13Z = Instant.parse("2026-11-30T13:00:00Z");
+
+        Reservation own = reservationBusiness.createReservation(
+            CLIENT_USER_1, new CreateReservationCommand(RESOURCE_ID, t09Z, t11Z, 1, null), MADRID_ORG
+        );
+        Reservation other = reservationBusiness.createReservation(
+            CLIENT_USER_2, new CreateReservationCommand(RESOURCE_ID, t12Z, t13Z, 1, null), MADRID_ORG
+        );
+
+        // 1. Modificar franja solapando consigo misma [09:00, 11:00) -> [09:30, 11:30) tiene exito (version=2)
+        Instant t0930Z = Instant.parse("2026-11-30T09:30:00Z");
+        Instant t1130Z = Instant.parse("2026-11-30T11:30:00Z");
+        Reservation modified = reservationBusiness.modifyReservation(
+            CLIENT_USER_1,
+            own.id(),
+            new ModifyReservationCommand(RESOURCE_ID, t0930Z, t1130Z, 1),
+            MADRID_ORG
+        );
+        assertThat(modified.version()).isEqualTo(2);
+        assertThat(modified.lines().getFirst().startAt()).isEqualTo(t0930Z);
+        assertThat(modified.lines().getFirst().endAt()).isEqualTo(t1130Z);
+
+        // 2. AC-010: Fallo por conflicto contra reserva de tercero [12:00, 13:00) deja intacta version=2 y [09:30, 11:30)
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1,
+            own.id(),
+            new ModifyReservationCommand(RESOURCE_ID, t12Z, t13Z, 1),
+            MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.BOOKING_CONFLICT);
+
+        Reservation intact = reservationBusiness.getOwnReservation(CLIENT_USER_1, own.id());
+        assertThat(intact.version()).isEqualTo(2);
+        assertThat(intact.lines().getFirst().startAt()).isEqualTo(t0930Z);
+
+        // 3. Validaciones de entrada y SQLState 23P01 / optimista / repositorio en modifyReservation
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, null, new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), MADRID_ORG
+        )).isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), null, MADRID_ORG
+        )).isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(null, t09Z, t10Z, 1), MADRID_ORG
+        )).isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), null
+        )).isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 2), MADRID_ORG
+        )).isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, UUID.randomUUID(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_2, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, null), MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+
+        reservationRepository.forcedSqlStateOnCanonicalInsert = "23P01";
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.BOOKING_CONFLICT);
+        reservationRepository.forcedSqlStateOnCanonicalInsert = "22001";
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), MADRID_ORG
+        )).isInstanceOf(ReservationsRepositoryException.class);
+        reservationRepository.forcedSqlStateOnCanonicalInsert = null;
+        reservationRepository.forceVersionMismatchOnNextUpdate = true;
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+
+        // 4. TT-019: Cancelacion por HOLDER y MANAGEMENT, liberacion inmediata y validaciones de estado/ambito
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(null, own.id()))
+            .isInstanceOf(ReservationsBusinessException.class);
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(CLIENT_USER_1, null))
+            .isInstanceOf(ReservationsBusinessException.class);
+        ActorContext nonAdminConsole = new ActorContext(
+            UUID.randomUUID(), ORG_ID, ActorType.USER, "US", OperationalScope.AMB_03_MANAGEMENT, null, Set.of()
+        );
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(nonAdminConsole, own.id()))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.SCOPE_VIOLATION);
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(CLIENT_USER_2, own.id()))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(CLIENT_USER_1, UUID.randomUUID()))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+
+        reservationRepository.forceVersionMismatchOnNextUpdate = true;
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(CLIENT_USER_1, own.id()))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+
+        Reservation cancelledByHolder = reservationBusiness.cancelReservation(CLIENT_USER_1, own.id());
+        assertThat(cancelledByHolder.status()).isEqualTo(ReservationStatus.CANCELLED);
+        assertThat(cancelledByHolder.lines().getFirst().status()).isEqualTo("RELEASED");
+
+        // Volver a reservar la franja liberada y cancelar ya CANCELLED -> TRANSITION_NOT_ALLOWED
+        Reservation rebooked = reservationBusiness.createReservation(
+            CLIENT_USER_2, new CreateReservationCommand(RESOURCE_ID, t0930Z, t1130Z, 1, null), MADRID_ORG
+        );
+        assertThat(rebooked.status()).isEqualTo(ReservationStatus.CONFIRMED);
+
+        assertThatThrownBy(() -> reservationBusiness.modifyReservation(
+            CLIENT_USER_1, own.id(), new ModifyReservationCommand(RESOURCE_ID, t09Z, t10Z, 1), MADRID_ORG
+        ))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+        assertThatThrownBy(() -> reservationBusiness.cancelReservation(CLIENT_USER_1, own.id()))
+            .isInstanceOf(ReservationsBusinessException.class)
+            .extracting(ex -> ((ReservationsBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.TRANSITION_NOT_ALLOWED);
+
+        // Cancelacion administrativa en consola sobre reserva de tercero
+        Reservation cancelledByConsole = reservationBusiness.cancelReservation(CONSOLE_MANAGER, other.id());
+        assertThat(cancelledByConsole.status()).isEqualTo(ReservationStatus.CANCELLED);
+        assertThat(cancelledByConsole.lines().getFirst().status()).isEqualTo("RELEASED");
+    }
+
     private static CatalogResource sampleResource(UUID id, ResourceStatus status) {
         return new CatalogResource(
             id,
@@ -599,6 +747,7 @@ class ReservationsBusinessTest {
 
         private final Map<UUID, StoredReservationAggregate> store = new LinkedHashMap<>();
         private String forcedSqlStateOnCanonicalInsert;
+        private boolean forceVersionMismatchOnNextUpdate;
 
         @Override
         public StoredReservationAggregate insertAggregate(
@@ -662,6 +811,104 @@ class ReservationsBusinessTest {
                     && rangeStart.isBefore(line.endAt()))
                 .sorted(Comparator.comparing(StoredReservationLine::startAt))
                 .toList();
+        }
+
+        @Override
+        public List<StoredReservationLine> findActiveLinesOverlappingExcludingReservation(
+            UUID resourceId,
+            Instant rangeStart,
+            Instant rangeEnd,
+            UUID excludedReservationId
+        ) {
+            return store.values().stream()
+                .flatMap(agg -> agg.lines().stream())
+                .filter(line -> "ACTIVE".equals(line.status())
+                    && !line.reservationId().equals(excludedReservationId)
+                    && line.resourceId().equals(resourceId)
+                    && line.startAt().isBefore(rangeEnd)
+                    && rangeStart.isBefore(line.endAt()))
+                .sorted(Comparator.comparing(StoredReservationLine::startAt))
+                .toList();
+        }
+
+        @Override
+        public Optional<StoredReservationAggregate> modifyAggregateWithCanonicalLocks(
+            List<UUID> canonicalResourceRoots,
+            UUID reservationId,
+            int expectedVersion,
+            Instant updatedAt,
+            StoredReservationLine replacementLine
+        ) {
+            if (forcedSqlStateOnCanonicalInsert != null) {
+                throw new ReservationsRepositoryException("Forced failure", null, forcedSqlStateOnCanonicalInsert);
+            }
+            if (forceVersionMismatchOnNextUpdate) {
+                forceVersionMismatchOnNextUpdate = false;
+                return Optional.empty();
+            }
+            StoredReservationAggregate current = store.get(reservationId);
+            if (current == null || current.reservation().version() != expectedVersion) {
+                return Optional.empty();
+            }
+            StoredReservation h = current.reservation();
+            StoredReservation updatedHeader = new StoredReservation(
+                h.id(), h.requesterId(), h.holderId(), h.originScope(), h.status(),
+                h.pendingReason(), h.expiresAt(), h.seriesId(), h.seriesOccurrenceIndex(),
+                h.totalAmountMinor(), h.currencyCode(), h.paymentStatus(), h.attendanceStatus(),
+                h.attendanceMarkedByUserId(), h.attendanceMarkedAt(), h.cancellationSource(),
+                h.causedByBlockId(), h.version() + 1, h.createdAt(), updatedAt
+            );
+            StoredReservationLine oldLine = current.lines().getFirst();
+            StoredReservationLine updatedLine = new StoredReservationLine(
+                oldLine.id(), reservationId, oldLine.lineNumber(),
+                replacementLine.resourceId(), replacementLine.resourceRootId(),
+                replacementLine.startAt(), replacementLine.endAt(),
+                replacementLine.requestedUnits(), replacementLine.exclusive(),
+                oldLine.status(), replacementLine.lineAmountMinor(), replacementLine.currencyCode()
+            );
+            StoredReservationAggregate next = new StoredReservationAggregate(updatedHeader, List.of(updatedLine));
+            store.put(reservationId, next);
+            return Optional.of(next);
+        }
+
+        @Override
+        public Optional<StoredReservation> updateStatus(
+            UUID reservationId,
+            String newStatus,
+            String pendingReason,
+            Instant expiresAt,
+            String cancellationSource,
+            UUID causedByBlockId,
+            int expectedVersion,
+            Instant updatedAt
+        ) {
+            if (forceVersionMismatchOnNextUpdate) {
+                forceVersionMismatchOnNextUpdate = false;
+                return Optional.empty();
+            }
+            StoredReservationAggregate current = store.get(reservationId);
+            if (current == null || current.reservation().version() != expectedVersion) {
+                return Optional.empty();
+            }
+            StoredReservation h = current.reservation();
+            StoredReservation updatedHeader = new StoredReservation(
+                h.id(), h.requesterId(), h.holderId(), h.originScope(), newStatus,
+                pendingReason, expiresAt, h.seriesId(), h.seriesOccurrenceIndex(),
+                h.totalAmountMinor(), h.currencyCode(), h.paymentStatus(), h.attendanceStatus(),
+                h.attendanceMarkedByUserId(), h.attendanceMarkedAt(), cancellationSource,
+                causedByBlockId, h.version() + 1, h.createdAt(), updatedAt
+            );
+            List<StoredReservationLine> updatedLines = current.lines().stream()
+                .map(line -> new StoredReservationLine(
+                    line.id(), line.reservationId(), line.lineNumber(),
+                    line.resourceId(), line.resourceRootId(), line.startAt(), line.endAt(),
+                    line.requestedUnits(), line.exclusive(),
+                    "CANCELLED".equals(newStatus) ? "RELEASED" : line.status(),
+                    line.lineAmountMinor(), line.currencyCode()
+                ))
+                .toList();
+            store.put(reservationId, new StoredReservationAggregate(updatedHeader, updatedLines));
+            return Optional.of(updatedHeader);
         }
     }
 }
