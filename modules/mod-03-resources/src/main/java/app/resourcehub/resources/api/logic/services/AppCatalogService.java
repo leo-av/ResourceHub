@@ -11,6 +11,7 @@ import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import app.resourcehub.shared.business.structs.OperationalScope;
+import app.resourcehub.shared.business.structs.ResourceNature;
 import java.net.URI;
 import java.time.Clock;
 import java.util.List;
@@ -23,10 +24,19 @@ public class AppCatalogService {
         String requestId,
         Clock clock
     ) {
+        return listResourceTypes(actor, null, requestId, clock);
+    }
+
+    public ResponseWrapper<List<ResourceType>> listResourceTypes(
+        ActorContext actor,
+        ResourceNature nature,
+        String requestId,
+        Clock clock
+    ) {
         requireAppScope(actor);
-        List<ResourceType> activeTypes = B.resourceTypes().listResourceTypes().stream()
-            .filter(ResourceType::active)
-            .toList();
+        List<ResourceType> activeTypes = nature == null
+            ? B.resourceTypes().listResourceTypes().stream().filter(ResourceType::active).toList()
+            : B.resourceTypes().listActiveResourceTypesByNature(nature);
         return ResponseWrapper.ok("OK", activeTypes, effectiveRequestId(requestId), effectiveClock(clock).instant());
     }
 

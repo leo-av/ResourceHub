@@ -14,6 +14,7 @@ import app.resourcehub.shared.api.structs.ResponseWrapper;
 import app.resourcehub.shared.business.structs.ActorContext;
 import app.resourcehub.shared.business.structs.ErrorCode;
 import app.resourcehub.shared.business.structs.OperationalScope;
+import app.resourcehub.shared.business.structs.ResourceNature;
 import java.net.URI;
 import java.time.Clock;
 import java.util.List;
@@ -45,8 +46,19 @@ public class ConsoleCatalogService {
         String requestId,
         Clock clock
     ) {
+        return listResourceTypes(actor, null, requestId, clock);
+    }
+
+    public ResponseWrapper<List<ResourceType>> listResourceTypes(
+        ActorContext actor,
+        ResourceNature nature,
+        String requestId,
+        Clock clock
+    ) {
         requireConsoleManagement(actor);
-        List<ResourceType> items = B.resourceTypes().listResourceTypes();
+        List<ResourceType> items = nature == null
+            ? B.resourceTypes().listResourceTypes()
+            : B.resourceTypes().listResourceTypesByNature(nature);
         return ResponseWrapper.ok("OK", items, effectiveRequestId(requestId), effectiveClock(clock).instant());
     }
 

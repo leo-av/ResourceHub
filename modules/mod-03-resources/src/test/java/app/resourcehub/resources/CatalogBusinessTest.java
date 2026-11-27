@@ -220,11 +220,163 @@ class CatalogBusinessTest {
         assertThat(resourceBusiness.listAvailablePage(1, 10).totalItems()).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("TT-023 [PRU-01 / D-10]: Filtrado por naturaleza y linkedUserId exclusivo de PERSON")
+    void shouldFilterByFiveNaturesAndRestrictLinkedUserIdToPerson() {
+        ResourceType spaceActive = resourceTypeBusiness.createResourceType(
+            "SALAS_ACTIVE", "Salas Activas", null, ResourceNature.SPACE
+        );
+        ResourceType spaceInactive = resourceTypeBusiness.createResourceType(
+            "SALAS_INACTIVE", "Salas Inactivas", null, ResourceNature.SPACE
+        );
+        resourceTypeBusiness.setActive(spaceInactive.id(), false);
+        ResourceType personType = resourceTypeBusiness.createResourceType(
+            "CONSULTORES", "Consultores", null, ResourceNature.PERSON
+        );
+
+        assertThat(resourceTypeBusiness.listResourceTypesByNature(ResourceNature.SPACE)).hasSize(2);
+        assertThat(resourceTypeBusiness.listActiveResourceTypesByNature(ResourceNature.SPACE))
+            .extracting(ResourceType::id)
+            .containsExactly(spaceActive.id());
+        assertThat(resourceTypeBusiness.listResourceTypesByNature(ResourceNature.PERSON)).hasSize(1);
+        assertThat(resourceTypeBusiness.listActiveResourceTypesByNature(ResourceNature.GENERIC_OBJECT)).isEmpty();
+
+        assertThatThrownBy(() -> resourceTypeBusiness.listResourceTypesByNature(null))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> resourceTypeBusiness.listActiveResourceTypesByNature(null))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        UUID userId = UUID.fromString("01936c00-0000-7000-8000-000000000123");
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            spaceActive.id(), "S-LINKED", "Sala inválida", null, 1, false, false, userId
+        ))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        CatalogResource consultant = resourceBusiness.createSimpleResource(
+            personType.id(), "MED-01", "Dra. Pérez", null, 1, false, false, userId
+        );
+        assertThat(consultant.linkedUserId()).isEqualTo(userId);
+    }
+
+    @Test
+    @DisplayName("Cobertura completa de ramas de validación, búsqueda, paginación y errores SQL en MOD-03")
+    void shouldCoverValidationAndErrorBranchesInResourceCatalogBusinesses() {
+        assertThatThrownBy(() -> new ResourceTypeBusiness(null, FIXED_CLOCK))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ResourceTypeBusiness(resourceTypeRepository, null))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ResourceBusiness(null, resourceTypeRepository, FIXED_CLOCK))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ResourceBusiness(resourceRepository, null, FIXED_CLOCK))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ResourceBusiness(resourceRepository, resourceTypeRepository, null))
+            .isInstanceOf(IllegalArgumentException.class);
+
+        // Validaciones en ResourceTypeBusiness
+        assertThatThrownBy(() -> resourceTypeBusiness.createResourceType(" ", "N", null, ResourceNature.SPACE))
+            .isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceTypeBusiness.createResourceType(
+            "X".repeat(51), "N", null, ResourceNature.SPACE
+        )).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceTypeBusiness.createResourceType(
+            "CODE", "N", "D".repeat(501), ResourceNature.SPACE
+        )).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceTypeBusiness.createResourceType("CODE", "N", null, null))
+            .isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceTypeBusiness.findById(null))
+            .isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceTypeBusiness.findByCode(" "))
+            .isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceTypeBusiness.setActive(UUID.randomUUID(), false))
+            .isInstanceOf(ResourcesBusinessException.class);
+
+        ResourceType type = resourceTypeBusiness.createResourceType("EQ", "Equipo", " ", ResourceNature.EQUIPMENT);
+        assertThat(type.description()).isNull();
+        assertThat(resourceTypeBusiness.findByCode("EQ")).isPresent();
+
+        resourceTypeRepository.forcedSqlState = "23505";
+        assertThatThrownBy(() -> resourceTypeBusiness.createResourceType(
+            "EQ2", "Equipo 2", null, ResourceNature.EQUIPMENT
+        ))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.ALREADY_EXISTS);
+        resourceTypeRepository.forcedSqlState = "40001";
+        assertThatThrownBy(() -> resourceTypeBusiness.createResourceType(
+            "EQ3", "Equipo 3", null, ResourceNature.EQUIPMENT
+        )).isInstanceOf(app.resourcehub.resources.repository.structs.ResourcesRepositoryException.class);
+        resourceTypeRepository.forcedSqlState = null;
+
+        // Validaciones en ResourceBusiness
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            null, "R1", "Rec 1", null, 1, false, false, null
+        )).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            type.id(), " ", "Rec 1", null, 1, false, false, null
+        )).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            type.id(), "X".repeat(51), "Rec 1", null, 1, false, false, null
+        )).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            type.id(), "R1", "Rec 1", "D".repeat(1001), 1, false, false, null
+        )).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            UUID.randomUUID(), "R1", "Rec 1", null, 1, false, false, null
+        )).isInstanceOf(ResourcesBusinessException.class);
+
+        CatalogResource r1 = resourceBusiness.createSimpleResource(
+            type.id(), "R-EQ-1", "Proyector", " ", 1, false, false, null
+        );
+        assertThat(r1.description()).isNull();
+        assertThat(resourceBusiness.findByCode("R-EQ-1")).isPresent();
+        assertThat(resourceBusiness.listAll()).hasSize(1);
+        assertThat(resourceBusiness.listAvailable()).hasSize(1);
+        assertThat(resourceBusiness.listPage(1, 10).totalItems()).isEqualTo(1L);
+
+        assertThatThrownBy(() -> resourceBusiness.findById(null)).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.findByCode(" ")).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.getResourceDescriptor(UUID.randomUUID()))
+            .isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.listPage(0, 10)).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.listPage(1, 0)).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.listPage(1, 101)).isInstanceOf(ResourcesBusinessException.class);
+        assertThatThrownBy(() -> resourceBusiness.enableResource(r1.id()))
+            .isInstanceOf(ResourcesBusinessException.class);
+        resourceBusiness.disableResource(r1.id());
+        assertThatThrownBy(() -> resourceBusiness.disableResource(r1.id()))
+            .isInstanceOf(ResourcesBusinessException.class);
+
+        resourceRepository.forcedSqlState = "23505";
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            type.id(), "R-EQ-2", "Proyector 2", null, 1, false, false, null
+        ))
+            .isInstanceOf(ResourcesBusinessException.class)
+            .extracting(ex -> ((ResourcesBusinessException) ex).getErrorCode())
+            .isEqualTo(ErrorCode.ALREADY_EXISTS);
+        resourceRepository.forcedSqlState = "40001";
+        assertThatThrownBy(() -> resourceBusiness.createSimpleResource(
+            type.id(), "R-EQ-3", "Proyector 3", null, 1, false, false, null
+        )).isInstanceOf(app.resourcehub.resources.repository.structs.ResourcesRepositoryException.class);
+        resourceRepository.forcedSqlState = null;
+    }
+
     private static final class InMemoryResourceTypeRepository extends ResourceTypeRepository {
         private final Map<UUID, StoredResourceType> byId = new LinkedHashMap<>();
+        private String forcedSqlState;
 
         @Override
         public StoredResourceType insert(StoredResourceType resourceType) {
+            if (forcedSqlState != null) {
+                throw new app.resourcehub.resources.repository.structs.ResourcesRepositoryException(
+                    "Forced SQL failure", null, forcedSqlState
+                );
+            }
             byId.put(resourceType.id(), resourceType);
             return resourceType;
         }
@@ -266,9 +418,15 @@ class CatalogBusinessTest {
 
     private static final class InMemoryResourceRepository extends ResourceRepository {
         private final Map<UUID, StoredResource> byId = new LinkedHashMap<>();
+        private String forcedSqlState;
 
         @Override
         public StoredResource insert(StoredResource resource) {
+            if (forcedSqlState != null) {
+                throw new app.resourcehub.resources.repository.structs.ResourcesRepositoryException(
+                    "Forced SQL failure", null, forcedSqlState
+                );
+            }
             byId.put(resource.id(), resource);
             return resource;
         }

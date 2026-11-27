@@ -97,6 +97,26 @@ public class ResourceTypeBusiness {
             .toList();
     }
 
+    public List<ResourceType> listResourceTypesByNature(ResourceNature nature) {
+        if (nature == null) {
+            throw new ResourcesBusinessException(ErrorCode.VALIDATION_FAILED, "nature must not be null");
+        }
+        return resourceTypeRepository.findAll().stream()
+            .filter(stored -> nature.name().equals(stored.natureCode()))
+            .map(ResourceTypeBusiness::mapToDomain)
+            .toList();
+    }
+
+    public List<ResourceType> listActiveResourceTypesByNature(ResourceNature nature) {
+        if (nature == null) {
+            throw new ResourcesBusinessException(ErrorCode.VALIDATION_FAILED, "nature must not be null");
+        }
+        return resourceTypeRepository.findAll().stream()
+            .filter(stored -> stored.active() && nature.name().equals(stored.natureCode()))
+            .map(ResourceTypeBusiness::mapToDomain)
+            .toList();
+    }
+
     public ResourceType setActive(UUID id, boolean active) {
         ResourceType existing = findById(id)
             .orElseThrow(() -> new ResourcesBusinessException(ErrorCode.NOT_FOUND, "ResourceType not found"));

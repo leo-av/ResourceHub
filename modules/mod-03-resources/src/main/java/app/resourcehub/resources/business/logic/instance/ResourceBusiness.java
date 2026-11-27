@@ -10,6 +10,7 @@ import app.resourcehub.resources.repository.structs.ResourcesRepositoryException
 import app.resourcehub.resources.repository.structs.StoredResource;
 import app.resourcehub.resources.repository.structs.StoredResourceType;
 import app.resourcehub.shared.business.structs.ErrorCode;
+import app.resourcehub.shared.business.structs.ResourceNature;
 import app.resourcehub.shared.business.utils.UuidV7Utils;
 import java.time.Clock;
 import java.time.Instant;
@@ -74,6 +75,12 @@ public class ResourceBusiness {
             throw new ResourcesBusinessException(
                 ErrorCode.CATALOG_RESOURCE_NOT_BOOKABLE,
                 "ResourceType is inactive"
+            );
+        }
+        if (linkedUserId != null && !ResourceNature.PERSON.name().equals(resourceType.natureCode())) {
+            throw new ResourcesBusinessException(
+                ErrorCode.VALIDATION_FAILED,
+                "linkedUserId is only allowed for PERSON resources"
             );
         }
         if (resourceRepository.findByCode(cleanCode).isPresent()) {
